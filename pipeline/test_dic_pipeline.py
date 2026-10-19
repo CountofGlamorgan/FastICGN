@@ -1173,6 +1173,47 @@ class FakeBinaryIntegrationTests(unittest.TestCase):
         self.assertEqual(recommendation["input_align"], "left")
         self.assertNotIn("highspeed2", recommendation["auto_limitation"])
 
+    def test_png_probe_reports_storage_depth_even_for_dark_or_renamed_files(self) -> None:
+        # A dark uint16 PNG must not be guessed to be 8-bit from its maximum.
+        # On older Pillow its decoded dtype is int32, but its storage is 16-bit.
+        for name, values, depth in (
+            ("eight", np.array([[0, 16], [100, 255]], dtype=np.uint8), 8),
+            ("dark16", np.array([[0, 16], [100, 255]], dtype=np.uint16), 16),
+            ("bright16", np.array([[0, 16], [30000, 65535]], dtype=np.uint16), 16),
+        ):
+            with self.subTest(name=name):
+                path = self.root / f"{name}.dat"
+                Image.fromarray(values).save(path, format="PNG")
+                self.assertEqual(path.read_bytes()[24], depth)  # PNG IHDR bit depth
+                with Image.open(path) as image:
+                    mode, dtype = image.mode, str(np.asarray(image).dtype)
+                    np.testing.assert_array_equal(np.asarray(image), values)
+                probe = pipeline.probe_image(str(path))
+                saturation = pipeline.probe_input_saturation(str(path), "8")
+                self.assertEqual(probe["container_bit_depth"], depth)
+                self.assertEqual(saturation["container_bit_depth"], depth)
+                self.assertEqual((probe["pillow_mode"], probe["dtype"]), (mode, dtype))
+                self.assertEqual(probe["pixel_max"], int(values.max()))
+                expected = values.astype(np.uint64) >> 8 if depth == 16 else values
+                self.assertEqual(saturation["pixel_max"], int(expected.max()))
+                self.assertEqual(saturation["saturated_fraction"],
+                                 float(np.count_nonzero(expected == 255) / expected.size))
+
+    def test_int32_tiff_probe_keeps_its_real_storage_depth(self) -> None:
+        path = self.root / "integer32.tif"
+        values = np.array([[0, 255], [65535, 100000]], dtype=np.int32)
+        Image.fromarray(values).save(path)
+        with Image.open(path) as image:
+            self.assertEqual(image.tag_v2[258], (32,))  # TIFF BitsPerSample
+            self.assertEqual(image.mode, "I")
+        probe = pipeline.probe_image(str(path))
+        saturation = pipeline.probe_input_saturation(str(path), "16")
+        self.assertEqual(probe["container_bit_depth"], 32)
+        self.assertEqual(saturation["container_bit_depth"], 32)
+        self.assertEqual(probe["dtype"], "int32")
+        self.assertEqual(probe["pixel_max"], 100000)
+        self.assertEqual(saturation["pixel_max"], 100000)
+
     # ── review-2026-10-03 batch 2: truthful results, --strict, diagnostics ──
 
     def test_empty_cod_fails_the_event_but_keeps_the_legacy_exit_code(self) -> None:

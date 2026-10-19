@@ -1368,6 +1368,16 @@ def saturation_report(saturated, container_bit_depth: int | None, pixel_max: int
     }
 
 
+def image_container_bit_depth(image, pixels) -> int:
+    """Keep 16-bit grayscale PNG storage distinct from Pillow's decoded dtype."""
+    # Older Pillow decodes 16-bit grayscale PNG as mode I / int32. PNG has
+    # no 32-bit integer samples; the same mode in a TIFF really can be 32-bit.
+    # Use the detected format, not the filename or the observed pixel maximum.
+    if image.format == "PNG" and image.mode == "I":
+        return 16
+    return int(pixels.dtype.itemsize * 8)
+
+
 def probe_input_saturation(image_path: str, effective_depth: str,
                            geometry: dict | None = None,
                            threshold: float = DEFAULT_SATURATION_WARN_FRACTION) -> dict:
@@ -1390,9 +1400,10 @@ def probe_input_saturation(image_path: str, effective_depth: str,
             if len(image.getbands()) > 1:
                 image = image.convert("L")
             pixels = np.asarray(image)
+            bit_depth = image_container_bit_depth(image, pixels)
         if pixels.size == 0:
             return probe
-        probe["container_bit_depth"] = int(pixels.dtype.itemsize * 8)
+        probe["container_bit_depth"] = bit_depth
         if effective_depth == "8" and pixels.dtype.itemsize > 1:
             pixels = pixels.astype(np.uint64) >> 8
         probe["pixel_max"] = int(np.max(pixels))
@@ -1996,11 +2007,11 @@ def probe_image(image_path: str) -> dict:
         width, height = image.size
         mode = image.mode
         pixels = np.asarray(image)
+        bit_depth = image_container_bit_depth(image, pixels)
     if pixels.size == 0:
         raise ValueError("image has no pixels")
 
     unsigned = pixels.astype(np.uint64, copy=False)
-    bit_depth = int(pixels.dtype.itemsize * 8)
     low_4_bits_all_zero = bool(
         bit_depth > 8 and np.all(np.bitwise_and(unsigned, 0xF) == 0)
     )

@@ -489,6 +489,14 @@ worth knowing:
 | `events[].target_frames_available`, `target_frames_selected` | targets found after the reference, and how many ran (`--max-frames`) |
 | `events[].binary_exit_code`, `binary_stderr_log`, `binary_totals`, `remediation` | the binary's exit code, its stderr log (written while the binary runs: the command line first, the exit code appended at the end, so a killed pipeline still leaves it), the end-of-run counters it printed (processed frames, whole-frame and POI-level fallback, verified resume), and one actionable sentence when it failed |
 
+For a 16-bit grayscale PNG, `container_bit_depth` is 16 in both the dry-run's
+`first_frame` and `input_saturation`, including on older Pillow versions that
+decode it into a 32-bit integer array. `first_frame.dtype` and `pillow_mode`
+still describe that decoded array; neither pixels nor their conversion to
+8-bit are changed. Other formats retain their existing depth reporting,
+including 32-bit integer TIFF. A dark 16-bit PNG is still 16-bit even when all
+observed values fit in 8 bits.
+
 Exit codes: 0, 1 and 2 keep their historical meaning; `--strict` adds 3 (the run
 finished but an event failed) and refuses with 2 whatever the dry-run would
 refuse. An invalid `--events` or `--event-interface-y` is refused with 2 in every
