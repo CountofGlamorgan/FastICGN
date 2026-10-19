@@ -1,0 +1,10 @@
+# FastICGN pipeline runtime dependencies (dic_pipeline.py, fasticgn_io.py and
+# the smoke/ checkers). Major versions are pinned; patch levels are not, so a
+# security update does not require a repository change.
+#
+#   python3 -m pip install -r pipeline/requirements.txt
+#
+# Python 3.11 or newer is required for the optional TOML config file
+# (tomllib is stdlib there); the pipeline runs without it on 3.10.
+numpy>=1.24,<3
+Pillow>=9.0,<12

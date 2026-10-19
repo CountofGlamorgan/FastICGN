@@ -1,0 +1,37 @@
+# FastICGN pipeline path configuration (optional).
+#
+# Copy to ~/.config/fasticgn/config.toml, or point $FASTICGN_CONFIG at a copy.
+# Every key is optional. Resolution order for each setting is:
+#
+#   1. the command-line argument (e.g. --gpu-bin)
+#   2. the environment variable  (FASTICGN_GPU_BIN, FASTICGN_CPU_BIN,
+#      FASTICGN_HOME, FASTICGN_READ_ALLOWLIST, FASTICGN_JOB_ROOT)
+#   3. this file's [paths] table
+#   4. the repository's own build/ trees
+#      (build/cuda-release, build/cuda-tests, build/cuda-fftw, build/cpu-only, build)
+#   5. the deprecated lab path /home/chonglang/opencorr-gpu-mvp-build/,
+#      used only if the file is really there, and always with a warning
+
+[paths]
+# CUDA CLI used by the pipeline and the MCP server.
+# gpu_bin = "/opt/fasticgn/bin/opencorr_cli_cuda_mvp"
+
+# CPU reference CLI. Reserved: nothing reads this key yet. smoke/selfcheck.sh
+# takes FASTICGN_CPU_BIN and the other smoke scripts OPENCORR_CPU_BIN or CPU_BIN
+# from the environment, not from this file.
+# cpu_bin = "/opt/fasticgn/bin/opencorr_cli_cpu"
+
+# Deployment root searched before the repository when looking for binaries.
+# home = "/opt/fasticgn"
+
+# Directories the MCP server may read from. A value here REPLACES the
+# ["/data", "/media"] default; the repository root and the MCP job root are
+# always allowed (that is deliberate: a clone must be able to read its own
+# test inputs). In the environment variable this is an os.pathsep-separated
+# string (on Linux, colon-separated). One historical deployment convention
+# also keeps <lab home>/DIC* readable, and only on a host where that
+# directory really exists.
+# read_allowlist = ["/data", "/srv/experiments"]
+
+# Root the MCP server writes job directories into (default ~/dic_jobs).
+# job_root = "/srv/dic_jobs"

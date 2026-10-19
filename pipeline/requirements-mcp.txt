@@ -1,0 +1,6 @@
+# MCP stdio server dependencies: the pipeline runtime plus FastMCP.
+#
+#   python3 -m pip install -r pipeline/requirements-mcp.txt
+-r requirements.txt
+# Pinned stdio server dependency; install into the production pipeline venv.
+fastmcp==3.4.4

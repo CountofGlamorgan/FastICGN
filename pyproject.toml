@@ -1,0 +1,35 @@
+# Optional packaging for the FastICGN Python pipeline. The C++ CLIs are built
+# with CMake (see CMakePresets.json); this file only installs the Python entry
+# points and their dependencies.
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fasticgn-pipeline"
+version = "1.2.0"
+description = "FastICGN pipeline: GPU-accelerated 2D-DIC sequence processing built on OpenCorr"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MPL-2.0" }
+authors = [{ name = "Chonglang Wang" }]
+keywords = ["digital image correlation", "DIC", "GPU", "CUDA", "IC-GN"]
+dependencies = ["numpy>=1.24,<3", "Pillow>=9.0,<12"]
+
+[project.optional-dependencies]
+mcp = ["fastmcp==3.4.4"]
+
+[project.scripts]
+fasticgn-pipeline = "dic_pipeline:main"
+
+[tool.setuptools]
+package-dir = { "" = "pipeline" }
+py-modules = ["dic_pipeline", "fasticgn_io", "mcp_server", "sync_agent_docs"]
+
+# dic_pipeline.py --describe and the MCP server read interface_contract.json at
+# runtime, and the CLI points users at config.example.toml. A py-modules
+# distribution has no package to hang package-data on, so both files install as
+# data files under <sys.prefix>/share/fasticgn/; dic_pipeline.data_file_path()
+# checks the module's own directory first and that share directory second.
+[tool.setuptools.data-files]
+"share/fasticgn" = ["pipeline/interface_contract.json", "pipeline/config.example.toml"]

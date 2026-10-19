@@ -1,0 +1,22 @@
+{
+  "nlohmann/json.hpp": {
+    "url": "https://raw.githubusercontent.com/nlohmann/json/v3.12.0/single_include/nlohmann/json.hpp",
+    "bytes": 953436,
+    "sha256": "aaf127c04cb31c406e5b04a63f1ae89369fccde6d8fa7cdda1ed4f32dfc5de63"
+  },
+  "nlohmann/LICENSE.MIT": {
+    "url": "https://raw.githubusercontent.com/nlohmann/json/v3.12.0/LICENSE.MIT",
+    "bytes": 1076,
+    "sha256": "46a65cffd1ea955132d95a8dd921640714a8d6b537d2e4e482d31145ae95b603"
+  },
+  "xxhash/xxhash.h": {
+    "url": "https://raw.githubusercontent.com/Cyan4973/xxHash/v0.8.3/xxhash.h",
+    "bytes": 268319,
+    "sha256": "17973c0dc49d9854ca26caa191f0e12f7a424b68858d9a78de3860d959d85e4b"
+  },
+  "xxhash/LICENSE": {
+    "url": "https://raw.githubusercontent.com/Cyan4973/xxHash/v0.8.3/LICENSE",
+    "bytes": 1389,
+    "sha256": "6ffedbc0f7878612d2b23589f1ff2ab15633e1df7963a5d9fc750ec5500c7e7a"
+  }
+}

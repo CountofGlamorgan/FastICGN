@@ -1,0 +1,1165 @@
+{
+  "contract": "fasticgn-agent-interface",
+  "schema_version": 1,
+  "implementation": {
+    "wrapper": "pipeline/run_dic.sh",
+    "pipeline": "pipeline/dic_pipeline.py",
+    "contract_source": "pipeline/interface_contract.json",
+    "describe_command": "run_dic.sh --describe",
+    "binary_version_command": "opencorr_cli_cuda_mvp --version",
+    "numeric_core_modified": false,
+    "numeric_core_modified_semantics": "false means this interface layer (wrapper, pipeline, contract and MCP server) contains no DIC numerics of its own. It is not a claim that the C++/CUDA numerical core is frozen; numerical changes to the core are gated by the production anchors (smoke/run_production_anchors.sh)."
+  },
+  "pipeline": {
+    "description": "Image sequence to GPU DIC displacement fields (full-field mode, the general entry point) or, when measurement lines are given, to an interface COD CSV (COD mode, laboratory post-processing; COD here is the slip across the interface, outputs.cod_csv).",
+    "input_modes": {
+      "single_event": "exactly one --image-dir",
+      "campaign": "exactly one --photo-dir containing event subdirectories"
+    },
+    "field_modes": {
+      "full_field": "neither --interface-y nor --line-y: every target frame's full POI grid is written to <output-dir>/<event>/frame_NNNNNN.csv (or .bin with --output-format raw); no aggregation, --cal unused",
+      "cod": "--interface-y or --line-y: the binary computes only the two measurement lines and the pipeline aggregates them into <output-dir>/cod_result.csv (single event) or <output-dir>/<event>.csv (campaign); --cal required"
+    },
+    "validation_scope": "--dry-run applies every check: the argument bounds (validate_args), the image-aware line/ROI checks on each event's first frame, duplicate target frame numbers and the state of --output-dir (including whether an existing ledger's target list can be resumed). --strict runs exactly that validation, plus its two strict-only checks (the deprecated lab binary path, a container deeper than 8 bits read as 8-bit), before anything is written and stops with exit 2 when it fails; for a campaign that is all or nothing. Without --strict, normal execution keeps its historical behaviour: the checks it always enforced still stop it with exit 1, and every other argument the dry-run would reject (even --subset, --cal <= 0, --gauge <= 1, L0 == L1, a reversed --roi-cols, ...) is reported as an argument_warning (stderr and summary) while the run proceeds. --events and --event-interface-y are checked the same way in every mode (validate_args lists the campaign directories, no image is read) and refuse with exit 2, without --strict too, before anything is written. After the run every COD result is checked (cod_empty, cod_line_missing, cod_all_zero). MCP plans and runs always pass --strict, after the MCP server's own parameter checks.",
+    "parameters": [
+      {
+        "name": "--photo-dir",
+        "dest": "photo_dir",
+        "type": "path",
+        "unit": null,
+        "default": null,
+        "required": false,
+        "required_group": "exactly_one_input",
+        "semantics": "Campaign root; each child directory with recognized images is one event."
+      },
+      {
+        "name": "--image-dir",
+        "dest": "image_dir",
+        "type": "path",
+        "unit": null,
+        "default": null,
+        "required": false,
+        "required_group": "exactly_one_input",
+        "semantics": "Single-event image directory; first sorted frame is the fixed reference."
+      },
+      {
+        "name": "--output-dir",
+        "dest": "output_dir",
+        "type": "path",
+        "unit": null,
+        "default": null,
+        "required": true,
+        "semantics": "Pipeline output root. Normal execution creates it (mkdir -p) and also accepts an existing one. --dry-run does not create it but reports its state (outputs.dry_run output_state): an existing file at this path or an unwritable location is an error, an earlier COD CSV that would be replaced is a cod_csv_exists warning, an earlier frame ledger is a frame_dir_has_ledger warning (the binary resumes it only when binary, inputs, parameters and target prefix are unchanged, otherwise it rejects the run), and frames without a ledger are a frame_dir_untracked error. Use a new directory per run."
+      },
+      {
+        "name": "--interface-y",
+        "dest": "interface_y",
+        "type": "integer",
+        "default": null,
+        "required": false,
+        "selects_mode": "cod",
+        "unit": "pixel",
+        "semantics": "Interface center y (reference-image row, increasing downward). Optional: supplying it (or --line-y) selects COD mode; with neither the pipeline runs the general full-field mode. The lines are L0 = interface_y - gauge//2 and L1 = interface_y + gauge//2. Ignored when --line-y is also supplied. In a campaign it is the default row and --event-interface-y overrides it for matching events."
+      },
+      {
+        "name": "--line-y",
+        "dest": "line_y",
+        "type": "string",
+        "format": "L0,L1",
+        "default": null,
+        "required": false,
+        "selects_mode": "cod",
+        "unit": "pixel",
+        "semantics": "Two explicit measurement-line y coordinates; selects COD mode and overrides --interface-y and --gauge. The fill-boundary extrapolation target is the midpoint (L0+L1)/2, not any --interface-y also given. The order sets the COD sign (COD = L0 side minus L1 side); the pipeline does not require L0 < L1."
+      },
+      {
+        "name": "--events",
+        "dest": "events",
+        "type": "string",
+        "format": "NAME_OR_GLOB[,NAME_OR_GLOB...]",
+        "default": null,
+        "required": false,
+        "unit": null,
+        "semantics": "Campaign only (--photo-dir): process only some events. A comma-separated list of event names and glob patterns (fnmatch, case-sensitive; no commas inside a pattern), for example 'event0*,event1*,event20' or 'event2[1-5]'. An event is selected when any item matches its directory name. Every item must match at least one event (a subdirectory with recognized images): a name that is not an event is event_not_found, a pattern that matches nothing is event_pattern_no_match, an empty selection is no_events_selected, an empty item is invalid_events and --image-dir is events_requires_photo_dir. These are checked before any image is read and stop the run with exit 2 in every mode (with or without --strict; the dry-run reports them as errors); nothing is written except a failure summary at --json-summary when one was given. The selection, the number of events left out and their names are in event_selection of the dry-run and the summary; the left-out events are not planned, run or reported (event_without_images too). null: every event, as before 2026-10-05."
+      },
+      {
+        "name": "--event-interface-y",
+        "dest": "event_interface_y",
+        "type": "array of string",
+        "format": "PATTERN=Y",
+        "repeatable": true,
+        "default": null,
+        "required": false,
+        "unit": null,
+        "semantics": "Campaign only: per-event interface rows. Repeatable PATTERN=Y (PATTERN an event name or fnmatch glob, case-sensitive, one per option; Y an integer row >= 0): the selected events whose name matches PATTERN use interface row Y, every other event uses --interface-y, which is required. The lines are Y - gauge//2 and Y + gauge//2 with the run-wide --gauge. Errors (exit 2 in every mode, before any image is read): invalid_event_interface_y (not PATTERN=Y, Y not an integer or negative, commas in PATTERN), event_interface_y_requires_photo_dir, event_interface_y_requires_interface_y, event_interface_y_with_line_y (--line-y fixes both lines for every event), event_interface_y_no_match (an option that applies to no selected event, including one that matches only events --events leaves out) and event_interface_y_conflict (one event matched by options with different rows; options that agree are allowed). Each event's row, its source (interface_y or event_interface_y) and the matching options are events[].geometry interface_y, interface_y_source and interface_y_overrides in the dry-run and the summary; event_selection lists every option with the events it applies to. The image-aware bounds (interface_y_out_of_bounds, line_y_out_of_bounds, line_y_inside_binary_margin) are checked per event with that event's row. null: one row for every event, as before 2026-10-05. MCP does not take it."
+      },
+      {
+        "name": "--cal",
+        "dest": "cal",
+        "type": "number",
+        "default": null,
+        "required": false,
+        "required_group": "required_in_cod_mode",
+        "exclusive_minimum": 0,
+        "unit": "mm/px",
+        "semantics": "Spatial calibration used for x_mm and cod_um. Required in COD mode and unused in full-field mode, where its value is not checked at all (as in 638ad18). In COD mode NaN and Infinity stop the run with an argument error (exit 2; the dry-run reports invalid_cal); a finite value <= 0 is a dry-run error and, without --strict, an argument_warning (a negative value flips the sign of cod_um and x_mm). Use 1.0 only for explicitly uncalibrated pixel-relative work; then x_mm is in pixels and cod_um / 1000 is in pixels."
+      },
+      {
+        "name": "--subset",
+        "dest": "subset",
+        "type": "integer",
+        "default": 15,
+        "required": false,
+        "minimum": 5,
+        "maximum": 51,
+        "odd": true,
+        "unit": "pixel",
+        "semantics": "SUBSET SIZE, not radius. Pipeline conversion is radius=(size-1)//2; --subset 15 means binary radius 7. An even or out-of-range size is a dry-run error and, without --strict, an argument_warning: --subset 16 runs as radius 7, exactly like 15."
+      },
+      {
+        "name": "--step",
+        "dest": "step",
+        "type": "integer",
+        "default": 1,
+        "required": false,
+        "minimum": 1,
+        "unit": "pixel",
+        "semantics": "POI grid spacing forwarded as binary grid_space."
+      },
+      {
+        "name": "--output-format",
+        "dest": "output_format",
+        "type": "string",
+        "choices": ["csv", "raw"],
+        "default": "csv",
+        "required": false,
+        "unit": null,
+        "semantics": "Frame payload format in full-field mode. COD mode reads frame CSV and rejects raw."
+      },
+      {
+        "name": "--image-pattern",
+        "dest": "image_pattern",
+        "type": "string",
+        "default": null,
+        "required": false,
+        "unit": null,
+        "semantics": "Image-discovery regex searched against each file name, case-insensitive. Default is the historical six-trailing-digits rule. A first capture group of digits becomes the frame number; otherwise frames are numbered from 1 in sort order."
+      },
+      {
+        "name": "--image-order",
+        "dest": "image_order",
+        "type": "string",
+        "choices": ["frame-number", "name"],
+        "default": "frame-number",
+        "required": false,
+        "unit": null,
+        "semantics": "Sequence ordering strategy. frame-number keeps the historical behaviour; name sorts by file name."
+      },
+      {
+        "name": "--max-frames",
+        "dest": "max_frames",
+        "type": "integer",
+        "default": null,
+        "required": false,
+        "minimum": 1,
+        "unit": "frame",
+        "semantics": "Process only the first N target frames after the reference (in the same sort order), for a quick trial run; null means all. The dry-run plans the same N (events[].target_frames, with target_frames_available for the full count), the summary records target_frames_available / target_frames_selected and an info max_frames_applied warning. The truncated target list is a prefix of the full one, so the binary can later extend the same frame directory to more frames (append). MCP plan and run tools take it as max_frames."
+      },
+      {
+        "name": "--roi-cols",
+        "dest": "roi_cols",
+        "type": "string",
+        "format": "x1,x2",
+        "default": null,
+        "required": false,
+        "unit": "pixel",
+        "semantics": "Inclusive horizontal filter for final COD aggregation; it does not reduce binary frame-field POIs."
+      },
+      {
+        "name": "--gauge",
+        "dest": "gauge",
+        "type": "integer",
+        "default": 35,
+        "required": false,
+        "exclusive_minimum": 0,
+        "unit": "pixel",
+        "semantics": "Requested separation when --interface-y is active; implementation uses half=gauge//2, so actual line separation is 2*(gauge//2) (default 35 produces 34 px). Ignored by --line-y. --gauge <= 0 (invalid_gauge) and --gauge 1 (both lines on one row, line_y_not_distinct, all-zero COD) are dry-run errors and, without --strict, argument_warning entries."
+      },
+      {
+        "name": "--cod-method",
+        "dest": "cod_method",
+        "type": "string",
+        "unit": null,
+        "default": "naive",
+        "required": false,
+        "choices": ["fillboundary", "naive"],
+        "semantics": "naive (the default since 2026-10-05, and before 2026-07-09) is u_L0-u_L1 without extrapolation; fillboundary (optional; the default from 2026-07-09 to 2026-10-05) extrapolates each line's u along its uy to the midpoint row (L0+L1)/2 before differencing. Single-point fillboundary values are noisier and more sensitive to a misplaced interface row (pitfall cod-method-generation)."
+      },
+      {
+        "name": "--conv-threshold",
+        "dest": "conv_threshold",
+        "type": "number",
+        "unit": "pixel-equivalent deformation norm",
+        "default": 0.001,
+        "required": false,
+        "exclusive_minimum": 0,
+        "semantics": "Always forwarded explicitly to pin CPU-aligned ICGN convergence semantics. NaN and Infinity are rejected by the argument parser (exit 2)."
+      },
+      {
+        "name": "--input-depth",
+        "dest": "input_depth",
+        "type": "string",
+        "unit": "bit",
+        "default": null,
+        "effective_default": "8",
+        "required": false,
+        "choices": ["8", "12", "16", "auto"],
+        "semantics": "Null means do not forward and retain binary legacy 8-bit default. Left-shifted 12-bit data (uint16 container, low 4 bits always zero, max > 4095) requires explicit 12; auto reads it as 16."
+      },
+      {
+        "name": "--input-align",
+        "dest": "input_align",
+        "type": "string",
+        "unit": null,
+        "default": null,
+        "required": false,
+        "choices": ["right", "left", "auto"],
+        "semantics": "12-bit storage alignment. Only legal with --input-depth 12; left-shifted 12-bit data requires left."
+      },
+      {
+        "name": "--input-normalize",
+        "dest": "input_normalize",
+        "type": "string",
+        "unit": null,
+        "default": null,
+        "effective_default": "none",
+        "required": false,
+        "choices": ["none", "to-8", "to-16", "unit"],
+        "semantics": "Optional linear grayscale scaling; ZNCC displacement is invariant to this scaling."
+      },
+      {
+        "name": "--gpu-device",
+        "dest": "gpu_device",
+        "type": "integer",
+        "unit": "CUDA device index",
+        "default": 0,
+        "required": false,
+        "minimum": 0,
+        "semantics": "CUDA device index."
+      },
+      {
+        "name": "--gpu-bin",
+        "dest": "gpu_bin",
+        "type": "path",
+        "unit": null,
+        "default": null,
+        "required": false,
+        "semantics": "GPU CLI path. Unset resolves through $FASTICGN_GPU_BIN, then the optional config file [paths].gpu_bin, then the repository build/ trees, then the deprecated lab path (which emits a path_resolution warning; --strict refuses it with gpu_bin_legacy_lab_path). Whatever the source, a relative path is made absolute by prepending the current directory (nothing else: '..' after a symlinked directory still follows the symlink), so dry-run and run use the same file. When the binary did not come from this option or this checkout's build/ trees, the dry-run, the console banner and the summary carry an info-level gpu_bin_outside_checkout note (normal for a lab deployment configured through the config file). MCP fixes this to the operator-configured binary rather than accepting arbitrary executables."
+      },
+      {
+        "name": "--keep-frames",
+        "dest": "keep_frames",
+        "type": "boolean",
+        "unit": null,
+        "default": false,
+        "required": false,
+        "semantics": "Retain intermediate 9-column frame CSV files after COD aggregation. Full-field mode always keeps its frame payloads, which are the product. Frames are kept when the binary or the aggregation fails. After an empty COD result (cod_empty) they are deleted like after any other aggregation, as in 638ad18, because a kept frame directory carries the binary's ledger and a rerun with corrected parameters into the same --output-dir would then be rejected (resume rejected); --keep-frames, or --strict, keeps them in place."
+      },
+      {
+        "name": "--strict",
+        "dest": "strict",
+        "type": "boolean",
+        "unit": null,
+        "default": false,
+        "required": false,
+        "semantics": "Opt-in hard mode. Before anything is written, run the complete --dry-run validation (argument bounds, image-aware checks, duplicate target frame numbers, output directory state, and two checks only --strict makes: the deprecated lab binary path, and a first frame in a container deeper than 8 bits that would be read as 8-bit, input_depth_truncates_container, whose message names the probe's recommended --input-depth/--input-align) and stop with exit 2 and a pipeline_error summary when it fails. The pre-check is all or nothing: one refused event of a campaign stops the whole campaign before any event runs. Its warnings and notes are written to the summary's top-level warning_details (stage strict_precheck; warn-level ones also to the top-level warnings). After the run, cod_all_zero and duplicate_frame_number count as failures of their event, the frames of an empty COD stay in place for diagnosis, and any failed event makes the process exit 3. Without it the historical exit codes are kept: a failed single event exits 1 and a campaign exits 0 whatever its events did. MCP plans and runs always pass it (mcp.run_params.strict)."
+      },
+      {
+        "name": "--saturation-warn-fraction",
+        "dest": "saturation_warn_fraction",
+        "type": "number",
+        "unit": "fraction of reference-frame pixels (COD mode: of a measurement-line band)",
+        "default": 0.05,
+        "required": false,
+        "minimum": 0,
+        "maximum": 1,
+        "semantics": "Heuristic, tunable threshold for input_8bit_max_255: when the reference frame (read at effective depth 8) has a pixel at 255, the warning is info if the graded fraction of pixels at 255 is at most this value and warn above it (always warn when the file's container is deeper than 8 bits, which hints at high-bit truncation). What is graded depends on the mode. COD mode: each measurement line's band, the pixels of that line's subsets that enter the COD aggregation (rows L - r .. L + r; columns x0 - r .. x1 + r for --roi-cols x0,x1, otherwise the binary's first and last POI column on the line +/- r; clipped to the image), and the largest band fraction decides. Full-field mode: the whole reference frame. The default 0.05 (0.02 for the whole frame until 2026-10-04) is a heuristic, not a limit calibrated against correlation error: the whole-frame fraction of lab frames is dominated by fixed bright pixels outside the measurement bands (docs/quality-checks.md section 5). The graded value, the threshold and the per-line numbers are in events[].input_saturation (also in the dry-run)."
+      },
+      {
+        "name": "--json-summary",
+        "dest": "json_summary",
+        "type": "path",
+        "unit": null,
+        "default": null,
+        "required": false,
+        "semantics": "Atomically write schema_version=1 run summary. Ignored in dry-run, whose JSON is stdout. If writing it fails, a minimal failure summary (pipeline_error: summary_write_failed) is attempted in its place and the process exits 1. It also changes campaign control flow: with it, an event directory holding a single image is reported as a failed event and an exception inside one event is recorded and the campaign continues; without it, single-image event directories are skipped silently and an exception aborts the whole campaign."
+      },
+      {
+        "name": "--dry-run",
+        "dest": "dry_run",
+        "type": "boolean",
+        "unit": null,
+        "default": false,
+        "required": false,
+        "semantics": "Read-only validation and complete command planning; stdout JSON, no output directory, no GPU process. Recognised in any unambiguous abbreviation (--dry), so that even a parse error comes back as JSON."
+      },
+      {
+        "name": "--describe",
+        "dest": "describe",
+        "type": "boolean",
+        "unit": null,
+        "default": false,
+        "required": false,
+        "standalone": true,
+        "semantics": "Print this contract byte-for-byte to stdout and exit without requiring normal arguments; any unambiguous abbreviation (--desc) works, and any other argument next to it is an error (exit 2)."
+      }
+    ]
+  },
+  "binary": {
+    "name": "opencorr_cli_cuda_mvp",
+    "subset_semantics": "POSITIONAL subset_radius is RADIUS, not size. This differs from pipeline --subset.",
+    "modes": {
+      "single_frame": {
+        "positionals": [
+          {"name": "ref_image", "type": "path", "unit": null, "semantics": "fixed reference image"},
+          {"name": "tar_image", "type": "path", "unit": null, "semantics": "single target image"},
+          {"name": "subset_radius", "type": "integer", "minimum": 1, "unit": "pixel", "semantics": "subset RADIUS, not full size; replaced by --subset-size N when that option is given"},
+          {"name": "grid_space", "type": "integer", "minimum": 1, "unit": "pixel", "semantics": "POI center spacing"},
+          {"name": "output_path", "type": "path", "unit": null, "semantics": "CSV output path or raw-output base path"}
+        ]
+      },
+      "multi_frame": {
+        "selector": "--multi-frame",
+        "required_options": [
+          {"name": "--ref", "type": "path", "unit": null, "semantics": "fixed reference image"},
+          {"name": "--tar-list", "type": "path", "unit": null, "semantics": "one '<target_path> <output_name>' entry per target frame"},
+          {"name": "--output-dir", "type": "path", "unit": null, "semantics": "binary frame-field output directory"}
+        ],
+        "positionals": [
+          {"name": "subset_radius", "type": "integer", "minimum": 1, "unit": "pixel", "semantics": "subset RADIUS, not full size; replaced by --subset-size N when that option is given"},
+          {"name": "grid_space", "type": "integer", "minimum": 1, "unit": "pixel", "semantics": "POI center spacing"}
+        ]
+      },
+      "version": {"selector": "--version", "stdout_fields": ["name", "git_hash", "build_date", "version", "git_dirty", "backend", "fftw"], "stdout_semantics": "a title line, then one key=value line per field in this order; nothing on stderr, no status line. name, git_hash and build_date are the stable first lines. version is the semantic version (the CMake project version, with -dev between releases; CITATION.cff carries it with a leading v). git_dirty is 1 when tracked files differed from git_hash at build time, 0 when they did not, unknown outside a git checkout (git_hash is then unknown too). backend is cuda or cpu; fftw is 1 when the FFTW CPU FFTCC is built in. git_hash and git_dirty are sampled on every build, build_date when the build tree was configured. Binaries built before 2026-10-05 print only the first three fields"},
+      "help": {"selector": "--help or -h anywhere on the command line, except as the value of an option that takes one (--output-dir -h names a directory) and after --verify-only, whose argument is always a directory", "semantics": "prints the usage text and then every option with its default on stdout and exits 0; nothing on stderr, no status line. Usage errors keep printing 'Error: ...' and the usage text (without the defaults table) on stderr and exit 1", "availability": "binaries whose --version prints a version= line (built from 2026-10-05 on); earlier ones answer 'Error: unknown option: --help' and exit 1"},
+      "verify_only": {
+        "selector": "--verify-only <output_dir>",
+        "semantics": "read-only audit of one multi-frame output directory. It computes nothing, opens no GPU and creates, moves, repairs or rewrites nothing (no quarantine, no archiving of leftovers). It reads the contract, checks every promised payload against its ledger record (size and XXH3-128 digest), the completion record against the contract, each manifest against the completion record and, for raw output, against the contract's frame list, lists leftovers of interrupted runs and entries the ledger does not name, and compares every input image with the fingerprint in the contract",
+        "stdout": "one JSON object on one line (schema fasticgn.verify-only/1); a one-line summary and each problem also go to stderr",
+        "stdout_fields": ["schema", "status", "complete", "exit_code", "output_dir", "frames_expected", "frames_verified", "files_expected", "files_verified", "bytes_verified", "rows_per_frame", "problems", "warnings", "completion", "manifests", "inputs", "contract", "missing", "mismatched", "no_intent", "invalid_intent", "untracked_outputs", "untracked", "residue", "pending_append", "pending_append_state", "appended_published", "tool", "version", "git_hash"],
+        "status_values": {
+          "complete": "every promised file is present and matches its ledger record, complete.json belongs to this contract and the manifests match it. Exit 0. inputs.status may still be missing (the images are no longer at the recorded paths and were not compared)",
+          "incomplete": "nothing contradicts the ledger, but the run is not finished: payloads or a manifest are missing, complete.json is absent or belongs to another target list, or an append was cut off right after its first new output (appended_published is then not empty). Rerunning the interrupted command resumes it; for an append that is the command with the longer target list, unchanged and without --repair (the shorter list is no longer accepted)",
+          "damaged": "something contradicts the ledger: a payload whose size or digest differs, a payload or a ledger record without its counterpart, a manifest that does not parse or no longer matches the completion record or the frame list, a damaged contract or completion record, or an entry of any type (file, symlink, directory) that carries the extension of the run's outputs in that directory and is not in the ledger. Rerunning the interrupted command with --repair regenerates tracked files; untracked_outputs have to be moved away by hand",
+          "inputs_changed": "the outputs are complete and match the ledger, but an input image no longer has the recorded content: the frames describe images that are no longer at those paths",
+          "locked": "another process holds the directory lock (a run is in progress); verify again when it has finished",
+          "not_a_run": "no .opencorr-state/contract.json: not a ledgered multi-frame output directory (single-frame output and binaries older than the ledger write none), or not a directory",
+          "not_found": "the path does not exist",
+          "error": "the directory could not be read (an I/O error, named in problems), or the command line did not name exactly one non-empty directory (output_dir is then null)"
+        },
+        "field_semantics": "complete is true only for status complete, and exit_code is then 0, otherwise 1. frames_* count frame payloads, files_* also diagnostics files and manifests. missing, mismatched, no_intent, invalid_intent, untracked_outputs, untracked and residue each list at most 20 names, with the exact total in <name>_count. appended_published is listed and counted the same way. untracked_outputs holds unledgered entries with the extension of the outputs published in that directory (.bin or .csv next to the frames, .csv in the diagnostics directory), whatever their file type. untracked holds every other entry the ledger does not name; the run's own --tar-list file is usually one of them (the pipeline keeps tar_list.txt there), so it is information, not a problem, although a rerun of the original command rejects any such entry other than its --tar-list file: complete describes the outputs, it does not promise that a rerun is accepted. residue (temporary files) is a leftover of an interrupted run, archived by the next run. pending_append says whether contract.pending.json exists and pending_append_state what it is: none; append (it extends the recorded contract: an append that has not been promoted); promoted (it repeats the recorded contract, a leftover); unrelated or unreadable (ignored). In state append, appended_published names the appended outputs already on disk that the longer list would accept (promised by the pending contract, regular file, size and digest equal to their own ledger record); appended outputs on disk that fail this are filed under mismatched, no_intent or invalid_intent. inputs is {status: match | changed | missing, checked, changed, missing}. contract summarises the recorded run: digest, schema_version, git_hash, build_date, binary_digest, reference, options, and legacy_scheduling_options (which of gpu_device, threads, preload, decode_threads an older binary still recorded). tool, version and git_hash name the binary that did the checking",
+        "exit_codes": "0 only for status complete; 1 for every other status, including a missing, empty or extra argument (status error on stdout, an Error line on stderr)",
+        "lock": "a shared lock on the directory is held while reading, so several audits can run together; a run started during an audit is refused with 'run directory already locked' and can simply be started again",
+        "scope": "the directory may have been written by another binary: the audit needs no matching executable. It does not judge measurement quality (see docs/quality-checks.md) and cannot verify a directory without its .opencorr-state",
+        "availability": "binaries whose --version prints a version= line (built from 2026-10-05 on); earlier ones report an unknown option"
+      }
+    },
+    "parameters": [
+      {"name": "--gpu-device", "type": "integer", "default": 0, "minimum": 0, "unit": "CUDA device index", "semantics": "CUDA device for FFTCC, and for ICGN unless --dual-gpu is given (which runs ICGN on devices 0 and 1 whatever this value is); validated only when CUDA initializes. Scheduling only: the output bytes do not depend on it and it is not part of the resume contract (see binary.resume_contract)"},
+      {"name": "--subset-size", "type": "integer", "default": null, "minimum": 3, "odd": true, "unit": "pixel", "semantics": "subset full SIZE alias for the positional subset_radius; radius = (size - 1) / 2, so --subset-size 15 equals radius 7. Supplying both is rejected; output is byte-identical either way"},
+      {"name": "--max-iter", "type": "integer", "default": 10, "minimum": 1, "unit": "iteration", "semantics": "maximum ICGN iterations per POI"},
+      {"name": "--conv-threshold", "type": "number", "default": 0.001, "exclusive_minimum": 0, "unit": "pixel-equivalent deformation norm", "semantics": "ICGN convergence threshold; 0.001 matches the CPU reference"},
+      {"name": "--threads", "type": "integer", "default": "max(1, omp_get_num_procs()-1)", "minimum": 1, "unit": "host thread", "semantics": "OpenMP host-side thread count. Scheduling only: the output bytes do not depend on it and it is not part of the resume contract (see binary.resume_contract)"},
+      {"name": "--line", "type": "string", "format": "y1,y2,...", "default": [], "unit": "pixel", "repeatable": true, "minimum_items": 1, "semantics": "values append across repeated flags; non-negative y inside binary subset margin are used, margin violations warn and skip"},
+      {"name": "--dual-gpu", "type": "boolean", "default": false, "unit": null, "semantics": "split the ICGN POIs across CUDA devices 0 and 1; FFTCC stays on --gpu-device"},
+      {"name": "--durability", "type": "string", "default": "rename", "choices": ["rename", "fsync"], "unit": null, "semantics": "publication durability policy. rename publishes every file through a private temporary plus atomic rename/link with zero fsync per frame and takes one constant barrier over ledger and manifests when a multi-frame job completes; fsync additionally forces every payload, ledger record and directory to the device (about 4 fsync per frame). Both are crash-consistent; neither changes output bytes and neither enters the resume contract"},
+      {"name": "--repair", "type": "boolean", "default": false, "unit": null, "applies_to": ["multi_frame"], "semantics": "on resume, move damaged tracked frames (truncated, same-size corruption, missing or invalid intent, unparsable manifest, damaged completion/manifest records) into .opencorr-state/quarantine/<timestamp>/ and regenerate them by replay. Crash temporaries are archived on every resume, with or without this flag. I/O faults (a metadata file that is missing, unopenable or unreadable) are reported with their errno and exit 1 instead of being repaired. Changed inputs/parameters/binary, reordered or shortened target lists, unknown files and output symlinks stay rejected"},
+      {"name": "--no-repair", "type": "boolean", "default": false, "unit": null, "sets": {"repair": false}, "applies_to": ["multi_frame"], "semantics": "explicitly keep the default hard rejection of damaged tracked frames"},
+      {"name": "--quiet", "type": "boolean", "default": false, "unit": null, "semantics": "drop the per-frame progress lines from stderr (the [n/N] line and the [BASELINE], [FALLBACK] and [POI-FALLBACK] lines); the run header, warnings, errors, the closing totals and the stdout status line stay. Presentation only: it changes no output byte and is not part of the resume contract. No effect in single-frame mode, which prints no per-frame lines. Without it stderr is unchanged. Available in binaries whose --version prints a version= line (built from 2026-10-05 on)"},
+      {"name": "--skip-fftcc", "type": "boolean", "default": true, "unit": null, "applies_to": ["multi_frame"], "semantics": "reuse previous-frame displacement seeds and skip FFTCC after the first target when quality permits"},
+      {"name": "--no-skip-fftcc", "type": "boolean", "default": false, "unit": null, "sets": {"skip_fftcc": false}, "applies_to": ["multi_frame"], "semantics": "force FFTCC initialization on every target frame"},
+      {"name": "--poi-fallback", "type": "boolean", "default": true, "unit": null, "applies_to": ["multi_frame"], "semantics": "repair bad POIs only on the multi-frame skip-FFTCC path; accepted but has no effect in single-frame mode"},
+      {"name": "--no-poi-fallback", "type": "boolean", "default": false, "unit": null, "sets": {"poi_fallback": false}, "applies_to": ["multi_frame"], "semantics": "disable POI-level repair on the multi-frame skip-FFTCC path"},
+      {"name": "--temporal-extrapolation", "type": "boolean", "default": false, "unit": null, "applies_to": ["multi_frame"], "semantics": "opt in to two-frame temporal displacement extrapolation; single-frame parsing accepts it but no temporal history exists"},
+      {"name": "--no-temporal-extrapolation", "type": "boolean", "default": false, "unit": null, "sets": {"temporal_extrapolation": false}, "applies_to": ["multi_frame"], "semantics": "explicitly retain previous-frame (zero-order) temporal seeds"},
+      {"name": "--output-format", "type": "string", "default": "csv", "choices": ["csv", "raw", "binary"], "unit": null, "semantics": "select CSV or 36-byte raw records; binary is accepted as an alias for raw"},
+      {"name": "--kernel", "type": "string", "default": "warp", "choices": ["legacy", "warp"], "unit": null, "semantics": "select the ICGN iteration kernel: warp-per-POI (default since 2026-09-02) or legacy block-per-POI (pre-2026-09 production baseline, kept as byte-identical A/B reference)"},
+      {"name": "--fftcc", "type": "string", "default": "gpu", "choices": ["cpu", "gpu"], "unit": null, "semantics": "select the FFTCC initial-guess backend: gpu = batched cuFFT (default in CUDA builds, no FFTW linkage), cpu = legacy FFTW path (requires an OPENCORR_GPU_MVP_WITH_FFTW=ON build; non-CUDA builds default to cpu)"},
+      {"name": "--input-depth", "type": "string", "default": "8", "choices": ["8", "12", "16", "auto"], "unit": "bit", "semantics": "select legacy 8-bit loading, explicit high-bit loading, or runtime inference"},
+      {"name": "--input-align", "type": "string", "default": "auto", "choices": ["right", "left", "auto"], "unit": null, "constraint": "right/left are legal only when input-depth=12; default auto is legal for other depths", "semantics": "interpret 12-bit values inside a uint16 container; left divides stored values by 16"},
+      {"name": "--input-normalize", "type": "string", "default": "none", "choices": ["none", "to-8", "to-16", "unit"], "unit": null, "semantics": "apply optional linear grayscale scaling before correlation"},
+      {"name": "--diagnostics", "type": "boolean", "default": false, "unit": null, "semantics": "write per-frame iteration/convergence/status diagnostics through a bounded background writer; publication failures fail the job"},
+      {"name": "--diagnostics-dir", "type": "path", "default": "", "unit": null, "semantics": "empty internal default while diagnostics is disabled; a supplied path also enables diagnostics"},
+      {"name": "--binary-output", "type": "boolean", "default": false, "unit": null, "alias_for": "--output-format raw", "semantics": "legacy flag selecting raw binary output"},
+      {"name": "--preload", "type": "boolean", "default": true, "unit": null, "applies_to": ["multi_frame"], "semantics": "preload target images on a host worker during multi-frame execution. Scheduling only, not part of the resume contract"},
+      {"name": "--no-preload", "type": "boolean", "default": false, "unit": null, "sets": {"preload": false}, "applies_to": ["multi_frame"], "semantics": "load target images synchronously in the multi-frame loop. Scheduling only, not part of the resume contract"},
+      {"name": "--decode-threads", "type": "integer", "default": 1, "minimum": 1, "unit": "decode worker thread", "applies_to": ["multi_frame"], "semantics": "image decode worker count for the multi-frame preloader; up to N frames are in flight, delivered in frame order, and decoded bytes are identical for any count. Scheduling only, not part of the resume contract"},
+      {"name": "--output-roi", "type": "string", "default": null, "format": "x1,y1,x2,y2", "unit": "pixel", "semantics": "write-side output crop: keep only POIs whose integer coordinates fall in the inclusive rectangle; compute and QA still cover the full field; recorded in the raw manifest"},
+      {"name": "--output-step", "type": "integer", "default": 1, "minimum": 1, "unit": "grid point", "semantics": "write-side output subsampling: keep only POIs whose x and y are both multiples of N. This is not every N-th grid point (the usage text of binaries built before 2026-10-05 says it is): the grid starts at margin = radius + 2, so for example radius 7 with grid spacing 2 and --output-step 2 keeps no POI at all, writes empty frames and still exits 0. Compute and QA still cover the full field; recorded in the raw manifest"}
+    ],
+    "process_output": {
+      "stdout": "every computing invocation (single-frame and multi-frame, successful or not, including a command line that was rejected) ends with exactly one JSON line, the status line. --version, --help and --verify-only print their own answer instead and no status line. A process that is killed or crashes prints none, so a missing status line means the run did not end by itself. The line is written even when the reader has closed the pipe (no SIGPIPE death). One exception: when stdout is non-blocking and has no room (a full pipe whose reader is busy) the binary waits up to 5 s in total for room; if the reader makes none, the line is missing or cut short although the run ended by itself with its normal exit code",
+      "status_line_schema": "fasticgn.run-status/1",
+      "status_line_fields": ["schema", "status", "exit_code", "error", "mode", "frames_total", "frames_processed", "frames_skipped", "output_dir", "output_path", "output_format", "elapsed_sec", "tool", "version", "git_hash", "git_dirty", "build_date", "backend", "totals", "warning_count", "warnings"],
+      "status_line_semantics": "status is ok exactly when exit_code is 0, otherwise error. error is the text of the first 'Error:' line (null on success). mode is single-frame, multi-frame, or null when the command line was rejected before a mode was chosen. frames_total counts the targets requested; frames_processed those computed by this invocation (a resume replays from frame 1, so it counts every frame again); frames_skipped those left alone because the directory verified as a complete run (frames_processed is then 0). output_dir is absolute; output_path exists only in single-frame mode; output_format is csv or raw. The line is strict UTF-8: single-frame mode accepts an output path that is not valid UTF-8 and writes the file there, but output_dir and output_path then show each undecodable byte as U+FFFD and no longer locate the file (multi-frame mode rejects such paths at startup). elapsed_sec is the wall time of the whole process. git_dirty is true, false or null. totals (multi-frame runs that computed and succeeded) holds skip_fftcc_frames, fallback_frames, poi_fallback_frames, poi_fallback_pois, poi_fallback_recovered, temporal_seed_frames, temporal_seed_pois and resumed_from_existing_files. warnings holds the text of the first 20 'Warning:' lines, warning_count their total",
+      "stderr": "the run header, one progress line per frame plus [BASELINE], [FALLBACK] and [POI-FALLBACK] lines, warnings, errors and the closing totals. --quiet drops only the per-frame lines. The pipeline keeps the whole stream as events[].binary_stderr_log and discards the binary's stdout",
+      "availability": "binaries whose --version prints a version= line (built from 2026-10-05 on); earlier ones print nothing on stdout except for --version",
+      "audit_basis": "Contract auditing used printUsage, parseCommonOption, --help and --version."
+    },
+    "resume_contract": {
+      "file": ".opencorr-state/contract.json (see outputs.run_state)",
+      "compared_on_resume": "the executable's content fingerprint, git_hash and build_date; the reference image's canonical path and content fingerprint; options radius, step, dual_gpu, kernel, fftcc, max_iteration, convergence, skip_fftcc, poi_fallback, temporal_extrapolation, format, line_ys, input_depth, input_align, input_normalize, output_roi_enabled, output_roi, output_step, diagnostics, diagnostics_dir; and the target list (each input's path and fingerprint, output_name and file), which may only grow by appending",
+      "not_compared": "--durability, --repair, --quiet, and the scheduling options --gpu-device, --threads, --preload / --no-preload and --decode-threads. On 2026-10-05 each scheduling option was varied against the 60-frame production anchor (11 combinations, both GPUs) and against the CPU-only and the --fftcc cpu backends: every output tree was byte-identical. The manifest's engine block still records the values of the run that wrote it",
+      "legacy": "binaries whose --version prints no version= line wrote the four scheduling options into the contract and compare them, so with those binaries a different --threads (including the default, which follows the CPUs the process may use), --gpu-device, --preload or --decode-threads rejects the resume. Newer binaries ignore the four keys in such a contract",
+      "rejection_message": "'resume rejected: run configuration/reference/binary changed (recorded -> requested): <field>: <old> -> <new>; ...' names every differing contract field with both values (options.max_iteration: 10 -> 11, binary.digest, reference.content.digest, ...) and says which kind of change it is; 'resume rejected: targets changed/reordered; ...' names the first differing target or the two list lengths. Binaries whose --version prints no version= line print only the first sentence",
+      "other_binaries": "the executable's fingerprint is part of the contract, so a directory can only be resumed by the byte-identical binary that wrote it, never by an older or newer build (rebuilding the same commit also changes it). Any ledger-aware binary rejects a foreign directory and leaves it untouched; binaries older than the ledger (2026-09-17) do not see it: they skip the frames that exist and compute the rest from a new baseline, which gives different numbers, so never point them at an existing directory. --verify-only needs no matching binary"
+    }
+  },
+  "outputs": {
+    "frame_csv": {
+      "availability": "COD mode: intermediate files in <output-dir>/_frames_<event>/, deleted after a successful aggregation unless --keep-frames. Full-field mode: the product, always kept in <output-dir>/<event>/ (with --output-format raw they are .bin files described by raw_manifest instead).",
+      "file_naming": "frame_NNNNNN.csv where NNNNNN is the zero-padded frame number the pipeline assigned to the target image (see cod_csv frame); the reference image has no file",
+      "columns": [
+        {"index": 0, "name": "x", "type": "integer", "unit": "pixel", "meaning": "POI center x: reference-image column, increasing to the right"},
+        {"index": 1, "name": "y", "type": "integer", "unit": "pixel", "meaning": "POI center y: reference-image row, increasing downward"},
+        {"index": 2, "name": "u", "type": "number", "unit": "pixel", "meaning": "x displacement from the reference image (+x right)"},
+        {"index": 3, "name": "v", "type": "number", "unit": "pixel", "meaning": "y displacement from the reference image (+y down)"},
+        {"index": 4, "name": "zncc", "type": "number", "unit": "dimensionless", "meaning": "quality/status; zncc<0 is not a valid displacement row"},
+        {"index": 5, "name": "uy", "type": "number", "unit": "px/px", "meaning": "du/dy used by fill-boundary"},
+        {"index": 6, "name": "vy", "type": "number", "unit": "px/px", "meaning": "dv/dy"},
+        {"index": 7, "name": "ux", "type": "number", "unit": "px/px", "meaning": "du/dx"},
+        {"index": 8, "name": "vx", "type": "number", "unit": "px/px", "meaning": "dv/dx"}
+      ],
+      "serialization": "x/y are integers; floating columns use general format with six significant digits",
+      "validity_rule": "For binary-compatible valid_ratio use finite(zncc) && zncc>=0. For displacement statistics additionally require finite(u) && finite(v).",
+      "status_rule": "zncc<0 carries boundary/failure/status rows; u and v may be seeds or failed-iteration residue and must be filtered."
+    },
+    "cod_csv": {
+      "columns": [
+        {"index": 0, "name": "frame", "type": "integer", "meaning": "frame number of the target image as the pipeline assigned it: the first capture group of --image-pattern when it is all digits (by default the six digits before the extension), otherwise the 1-based position in sort order. It is the NNNNNN of _frames_<event>/frame_NNNNNN.csv. The reference image (the first in sort order) has no rows."},
+        {"index": 1, "name": "x_mm", "type": "number", "unit": "mm", "meaning": "x_px * cal, where x_px is the POI column in reference-image pixels. The origin is image column 0, not the --roi-cols start. Only POI columns inside --roi-cols (inclusive) appear; the column set is taken from the first frame CSV."},
+        {"index": 2, "name": "cod_um", "type": "number", "unit": "micrometre when cal is in mm/px", "meaning": "slip across the interface: the relative displacement of its two sides, i.e. the difference of the horizontal displacement u between the two lines, L0 side minus L1 side. It is not an opening displacement; the names cod_um, --cod-method and COD are historical and are kept. naive (default since 2026-10-05): 1000 * cal * (u_L0 - u_L1); fillboundary (--cod-method fillboundary; the default from 2026-07-09 to 2026-10-05): 1000 * cal * ([u_L0 + uy_L0 * (y0 - L0)] - [u_L1 + uy_L1 * (y0 - L1)]) with y0 = (L0 + L1) / 2, i.e. each line's u is extrapolated along its own uy = du/dy to the midpoint between the lines. L0 is the first --line-y value or interface_y - gauge//2, L1 the second or interface_y + gauge//2. The sign is fixed by that order and by nothing else (positive when the, possibly extrapolated, u on the L0 side exceeds the one on the L1 side, for cal > 0); the pipeline does not require L0 < L1, and reversing the order flips every sign. The method actually used is events[].cod_mode in the summary."}
+      ],
+      "point_rule": "a (frame, x) point is written only when both lines have a valid row there (finite zncc >= 0) and the result is finite; otherwise it is omitted",
+      "serialization": "x_mm and cod_um use four digits after the decimal point; non-finite COD points are omitted rather than written as NaN; rows are grouped by ascending frame, x ascending within a frame; the reference frame has no row",
+      "row_count_expectation": "at most events[].frames x the number of POI columns inside --roi-cols; fewer rows mean points were omitted. The summary checks this for you in events[].cod_stats: a header-only file is cod_empty (event status fail, and cod_line_missing when a line had no row at all), a file whose cod_um values are all 0.0000 is cod_all_zero (warn; fail with --strict), and target frames without any point are cod_frames_without_points (warn).",
+      "publication": "written to a temporary file in the same directory and renamed over the target, so the target is either the previous file or the complete new one"
+    },
+    "ordinary_csv_manifest": {
+      "exists": false,
+      "note": "The pipeline uses binary CSV mode, which writes no binary manifest. Pipeline provenance comes from binary --version."
+    },
+    "raw_manifest": {
+      "format": "opencorr-gpu-raw-v1",
+      "endianness": "little",
+      "record_bytes": 36,
+      "file_naming": "multi-frame: manifest.opencorr-raw.json in the output directory; single-frame: the .bin output path plus .manifest.json (out.csv becomes out.bin and out.bin.manifest.json)",
+      "top_level_fields": ["format", "endianness", "record_bytes", "ref_path", "tar_list_path", "output_dir", "subset_radius", "grid_space", "conv_threshold", "max_iteration", "durability", "engine", "input_image", "fields", "csv_field_order", "frames"],
+      "optional_top_level_fields": ["output_filter"],
+      "output_filter_fields": ["roi_enabled", "roi", "step"],
+      "output_filter_semantics": "present only when --output-roi or --output-step is active; roi is present only when roi_enabled is true",
+      "engine_fields": ["implementation", "git_hash", "build_date", "version", "git_dirty", "icgn_backend", "icgn_kernel", "oob_policy", "fftcc_backend", "skip_fftcc", "poi_fallback", "temporal_extrapolation", "frame_fallback_policy", "preload", "durability", "threads", "decode_threads", "dual_gpu", "gpu_device", "cuda"],
+      "engine_cuda_fields": ["device_name", "compute_capability", "driver_version", "runtime_version"],
+      "engine_semantics": "what actually ran, for replay and audit: solver backend and iteration kernel, out-of-bounds policy, FFTCC backend, the skip/fallback/temporal seeding policies, durability, build identity (version and git_dirty, true / false / null, since 2026-10-05: null means not built from a git checkout), host thread counts and the CUDA device. threads, decode_threads, preload and gpu_device are those of the run that wrote the manifest; they do not affect the output and a resume may use others. cuda is null in CPU-only builds, and each of its members is null when the CUDA query failed. Additive metadata only: frame payload bytes are unchanged, and the run ledger digests whatever manifest it finds, so completion records stay consistent. Manifests written before 2026-09-17 have no engine block.",
+      "oob_policy_semantics": "geometric-v1: a POI whose warped target subset has any sample outside the bicubic interpolatable range is rejected with zncc = -3 (docs/output-format.md). Absent from manifests written before 2026-09-17, which predate the rule.",
+      "frame_fallback_policy_semantics": "how the skip-FFTCC whole-frame fallback (skip attempt bad fraction above the first target's bad_ratio + 0.03; bad = non-finite zncc or zncc < 0.8, -3 not counted) combines its from-scratch pass (FFTCC from a zero guess, then ICGN) with the skip attempt. per-poi-merge-v1: a good skip result (finite zncc >= 0.8) is kept; a bad one is replaced only when the from-scratch zncc is finite, not -3 and at least as high (the POI-level repair rule); a -3 one only by a good from-scratch result, unlike the POI-level repair where -3 is terminal. The merged frame never has more bad POIs than the skip attempt; frame bad_ratio is the merged value. Once triggered the fallback may fire on every later frame, each time adding a full-frame FFTCC + ICGN. Absent from manifests of earlier builds, whose fallback replaced the whole skip attempt.",
+      "durability_semantics": "effective --durability policy of the run that wrote the manifest; informational, it never changes frame payload bytes",
+      "input_image_fields": ["depth", "align", "normalize", "imread_flags", "reference_source_depth", "reference_source_range", "target_source_depth_mismatches", "gray_conversion"],
+      "input_image_semantics": "depth, align, normalize and imread_flags are the requested options, not per-frame auto effective values. With the default depth 8 the image is read with IMREAD_GRAYSCALE, which reduces a 16-bit file to 8 bits before the solver sees it. reference_source_depth is the OpenCV depth of the reference file as stored (CV_8U, CV_16U, ...), read once more with IMREAD_ANYDEPTH when depth is 8, so a 16-bit source stays visible; reference_source_range is its [min, max] stored value; both are null when that read failed. target_source_depth_mismatches counts the target frames whose stored depth differs from the reference: with depth 8 the file headers are compared (TIFF, PNG, JPEG, PNM and BMP), otherwise the decoded depths. Stored depths up to 8 bits count as one grey scale (OpenCV expands them all to full-range 8-bit samples); above 8 bits the depths must be equal. A frame whose header cannot be read is not compared and not counted: another container, a Netpbm header that does not end within the first 512 bytes, a TIFF BitsPerSample that is neither SHORT nor LONG, a truncated file. The three fields are information, not part of the resume contract, and exist in manifests written by binaries whose --version prints a version= line (built from 2026-10-05 on). Those binaries also warn (stderr and status line) when a reference deeper than 8 bits is read with depth 8 and when a target differs from the reference.",
+      "frame_fields": ["tar_path", "output_name", "file", "rows", "bytes", "format_sec", "write_sec", "bad_ratio", "baseline_bad_ratio", "fallback_threshold", "fallback_used", "skip_fftcc_used", "valid_ratio", "iteration_mean", "iteration_max", "poi_fallback_count", "poi_fallback_recovered", "temporal_seed_used", "temporal_seed_count"],
+      "nullable_frame_fields": ["bad_ratio", "baseline_bad_ratio", "fallback_threshold", "fallback_used", "skip_fftcc_used", "valid_ratio", "iteration_mean", "iteration_max", "poi_fallback_count", "poi_fallback_recovered", "temporal_seed_used", "temporal_seed_count"],
+      "frame_qa_semantics": "bad_ratio: fraction of all POIs whose zncc is non-finite or below 0.8, not counting zncc = -3, measured after any fallback. baseline_bad_ratio: set once, from the first target frame. fallback_threshold = baseline_bad_ratio + 0.03. fallback_used: the seeded attempt's bad ratio (printed on the [FALLBACK] stderr line, not stored) exceeded the threshold, so the whole frame was recomputed from a zero initial guess (FFTCC + ICGN) and merged with the seeded attempt per POI as engine.frame_fallback_policy describes; bad_ratio is then the merged value and never exceeds the seeded attempt's. Manifests without frame_fallback_policy come from builds whose fallback replaced the seeded attempt unconditionally. skip_fftcc_used: the frame was attempted with previous-frame seeds instead of FFTCC. poi_fallback_count / poi_fallback_recovered: POIs submitted to / recovered by the per-POI fallback. valid_ratio: fraction with finite zncc >= 0. CSV runs write no manifest; the same per-frame numbers then appear only on the binary's stderr ([FALLBACK] / [POI-FALLBACK] lines and the closing 'Frames with fallback FFTCC' totals), which the pipeline does not keep.",
+      "record_layout": [
+        {"name": "x", "dtype": "int32", "offset": 0},
+        {"name": "y", "dtype": "int32", "offset": 4},
+        {"name": "u", "dtype": "float32", "offset": 8},
+        {"name": "v", "dtype": "float32", "offset": 12},
+        {"name": "ux", "dtype": "float32", "offset": 16},
+        {"name": "uy", "dtype": "float32", "offset": 20},
+        {"name": "vx", "dtype": "float32", "offset": 24},
+        {"name": "vy", "dtype": "float32", "offset": 28},
+        {"name": "zncc", "dtype": "float32", "offset": 32}
+      ],
+      "csv_field_order": ["x", "y", "u", "v", "zncc", "uy", "vy", "ux", "vx"]
+    },
+    "diagnostics_manifest": {
+      "format": "opencorr-gpu-diagnostics-csv-v1",
+      "top_level_fields": ["format", "ref_path", "tar_list_path", "status_semantics", "durability", "engine", "columns", "frames"],
+      "engine_semantics": "identical engine block to the raw manifest",
+      "columns": ["x", "y", "iteration", "convergence", "status", "zncc"],
+      "frame_fields": ["tar_path", "output_name", "file", "rows"],
+      "status_rule": "finite zncc>=0 maps to 1; negative zncc is preserved; non-finite zncc maps to -5",
+      "provenance_limitation": "the engine block records build identity (git_hash, build_date), kernel, policies and device, but the manifest does not record the subset radius, grid spacing, convergence threshold or input options; those are in the run ledger (.opencorr-state/contract.json) and, for raw runs, in the raw manifest",
+      "output_filter_note": "--output-roi and --output-step do not apply to diagnostics CSV files, which always cover the full field, and this manifest carries no output_filter block"
+    },
+    "run_state": {
+      "path": ".opencorr-state/ inside every multi-frame binary --output-dir (for the pipeline: <output-dir>/_frames_<event>/ in COD mode, <output-dir>/<event>/ in full-field mode); a separate --diagnostics-dir shares this ledger",
+      "availability": "multi-frame runs in both CSV and raw format; single-frame mode has no ledger",
+      "purpose": "integrity and resume ledger: run contract (binary/input/parameter identity), one per-file commit intent, the completion record and any quarantined files",
+      "members": ["contract.json", "contract.pending.json", "complete.json", "<32-hex>.json per output file", "quarantine/<timestamp>-<pid>/"],
+      "archival_rule": "copy or move it together with the frame files; without it the frames are untracked and a later run in the same directory is rejected",
+      "visibility": "hidden dot-directory; pipeline and MCP frame_*.csv / *.json globs do not match it",
+      "safe_to_delete": "only when the frames are final and no resume is wanted; deleting it makes the directory unusable for resume",
+      "completion_semantics": "complete.json records that a run once completed. A later run that starts changing the directory (resume, append, repair) does not invalidate it first, so after a crash it can still be present while frames are missing or the manifest is older. To ask whether a directory is complete without changing it, use the binary's --verify-only (binary.modes.verify_only): it computes and writes nothing and needs neither the original command nor the same binary. Rerunning the identical command is the other check: a complete, matching run prints 'Verified complete run' and rewrites nothing, but an incomplete one resumes and computes, and it needs the same binary, the same inputs at the same paths and the same output-deciding options (binary.resume_contract; scheduling options such as --threads no longer count, except for binaries that still record them)."
+    },
+    "json_summary": {
+      "schema_version": 1,
+      "top_level_fields": ["schema_version", "params", "binary", "events", "global", "warnings", "warning_details", "verdict", "event_selection"],
+      "params_fields": ["photo_dir", "image_dir", "output_dir", "interface_y", "line_y", "events", "event_interface_y", "cal", "subset", "step", "output_format", "image_pattern", "image_order", "max_frames", "roi_cols", "gauge", "cod_method", "conv_threshold", "input_depth", "input_align", "input_normalize", "gpu_device", "gpu_bin", "keep_frames", "strict", "saturation_warn_fraction", "json_summary", "dry_run", "describe", "gpu_bin_source", "path_resolution_notes", "input_depth_effective", "input_align_effective", "input_normalize_effective", "field_mode"],
+      "params_semantics": "every argparse value as given, plus how the binary path was resolved (gpu_bin_source: argument, environment:FASTICGN_GPU_BIN, config:<file>, repository_build, legacy_lab_path or unresolved; path_resolution_notes: config-file problems and the deprecated-lab-path note, usually empty) and the effective input mode. gpu_bin is already absolute. The effective measurement lines and the rest of the geometry are in events[].geometry.",
+      "binary_fields": ["path", "git_hash", "build_date"],
+      "event_fields": ["status", "name", "field_mode", "frames", "poi_per_frame", "poi_per_frame_min", "poi_per_frame_max", "valid_ratio", "zncc_median", "cod_csv", "cod_method", "cod_mode", "field_dir", "field_dir_exists", "output_format", "input_pixel_max", "input_reference", "warnings", "input_saturated_fraction", "input_saturation", "target_frames_available", "target_frames_selected", "geometry", "cod_stats", "binary_exit_code", "binary_stderr_log", "binary_totals", "remediation", "warning_details"],
+      "status_semantics": "ok or fail for that event, decided by severity: fail when the event could not produce its result or any of its warnings has severity fail. Read it for every event: without --strict a campaign exits 0 even when events failed, and a single event whose COD came out empty (cod_empty) still exits 0 as it always did.",
+      "cod_csv_semantics": "path of the COD CSV this run wrote, filled only when the event's status is ok; null in full-field mode and for every failed event. A file found at the target path of a failed event is reported as stale_cod_csv when this run did not write it; an empty COD (cod_empty) is still written as a header-only file, as before, and named in that warning.",
+      "field_dir_semantics": "the event's frame directory (full-field mode: the frame payloads; COD mode: _frames_<event>), as in 638ad18 whether or not it still exists; field_dir_exists says whether it does. COD mode deletes it after the aggregation, an empty COD included, unless --keep-frames (or, for an empty COD, --strict), so it usually no longer exists there; events whose binary or aggregation failed keep it. MCP results null a field_dir that does not exist (mcp.results.nulled_paths).",
+      "cod_mode_semantics": "the aggregation that actually produced cod_csv: naive (the default since 2026-10-05) or fillboundary, null in full-field mode; cod_method is the requested method and cod_mode the one used, and they are always equal in COD mode. Under fillboundary a frame CSV without the uy column fails with cod_uy_column_missing instead of silently degrading fill-boundary to naive.",
+      "field_mode_semantics": "cod when --interface-y/--line-y selected COD post-processing, full_field otherwise",
+      "input_reference_fields": ["source_depth", "source_min", "source_max", "effective_depth", "effective_align", "output_depth", "output_min", "output_max", "scale", "scope"],
+      "input_saturated_fraction_semantics": "fraction of the whole reference frame's pixels equal to 255 at effective depth 8 (Pillow grayscale conversion; the binary's OpenCV conversion can differ by one grey level), null at other depths or without --json-summary; it grades input_8bit_max_255 in full-field mode only (COD mode grades the measurement-line bands, input_saturation)",
+      "input_saturation_fields": ["basis", "value", "threshold", "frame_fraction", "severity", "container_bit_depth", "lines"],
+      "input_saturation_line_fields": ["label", "y", "band_rows", "band_cols", "band_fraction", "subsets", "subsets_with_saturation", "subsets_over_10pct"],
+      "input_saturation_semantics": "added 2026-10-04: what input_8bit_max_255 is graded on, measured on the reference frame at effective depth 8 (null at other depths, when the reference cannot be read, or without --json-summary). basis is line_bands in COD mode and frame in full-field mode; value is the graded fraction (line_bands: the largest band_fraction, null when no line has a band; frame: the whole frame) and threshold the --saturation-warn-fraction it is compared with; frame_fraction = input_saturated_fraction; severity is the level input_8bit_max_255 gets (info when value <= threshold and the file is an 8-bit container, warn above it, when value is null, or whenever container_bit_depth > 8), null when no reference pixel is 255 and the warning is not raised. lines (COD mode, one entry per measurement line in L0, L1 order; empty in full-field mode): y is the line as passed to the binary; band_rows [y - r, y + r] and band_cols ([x0 - r, x1 + r] for --roi-cols x0,x1, else the binary's first and last POI column on the line +/- r), inclusive and clipped to the image, bound the band, the pixels of the line's subsets that enter the COD aggregation; band_fraction is the fraction of those pixels at 255; subsets is the number of those subsets (POI columns inside --roi-cols); subsets_with_saturation and subsets_over_10pct are the fractions of them holding at least one pixel at 255 and more than 10 % of their (2r + 1)^2 pixels at 255. A line the binary skips (inside its margin) or an --roi-cols without a POI column gives subsets 0 and nulls. r, the lines, the step and --roi-cols are the run's effective values (events[].geometry). The dry-run reports the same object per event (outputs.dry_run.input_saturation_semantics).",
+      "target_frames_semantics": "target_frames_available: target images found after the reference; target_frames_selected: how many were run (smaller only with --max-frames)",
+      "geometry_fields": ["subset_size", "subset_radius", "step", "line_ys", "line_source", "line_separation_px", "gauge_mm", "extrapolation_target_y", "extrapolation_px", "roi_cols", "interface_y", "interface_y_source", "interface_y_overrides"],
+      "geometry_semantics": "the geometry actually used: subset_radius = (subset_size - 1) // 2; line_ys = [L0, L1] as passed to the binary (line_source interface_y or line_y), null in full-field mode; line_separation_px = |L1 - L0|; gauge_mm = line_separation_px * cal; extrapolation_target_y = (L0 + L1) / 2 and extrapolation_px = [y0 - L0, y0 - L1] for fillboundary, null for naive (the default since 2026-10-05); roi_cols = the parsed --roi-cols; interface_y = the interface row this event's lines come from (L0 = interface_y - gauge//2), interface_y_source = interface_y (the --interface-y default) or event_interface_y (an --event-interface-y option), interface_y_overrides = the matching --event-interface-y options as given ([] for the default); all three null with --line-y or in full-field mode (added 2026-10-05)",
+      "cod_stats_fields": ["rows", "frames", "frames_with_points", "frames_without_points", "x_points", "line_rows", "line_rows_present", "all_zero", "max_um", "max_frame", "max_x_px", "max_x_mm", "min_um", "min_frame", "min_x_px", "min_x_mm", "abs_p95_um", "naive_at_max_um", "naive_at_min_um", "unreadable_frames"],
+      "cod_stats_semantics": "COD mode only (null otherwise, or when no aggregation ran), read from the aggregated values without recomputing them: rows = data rows written to the COD CSV; frames / frames_with_points / frames_without_points count target frames; x_points = POI columns inside --roi-cols; line_rows = rows found at y = L0 and y = L1 in all frame CSVs (any zncc), line_rows_present whether each is non-zero; all_zero = every written cod_um is 0.0000; max/min = the largest and smallest written cod_um (micrometre, 4 decimals) with their frame, column (px) and x_mm; abs_p95_um = 95th percentile of |cod_um|; naive_at_max_um / naive_at_min_um = 1000 * cal * (u_L0 - u_L1) at the same (frame, x), filled only under fillboundary and null under naive (the default since 2026-10-05), where max_um and min_um are themselves naive values (docs/quality-checks.md section 6); unreadable_frames = frame CSVs the aggregation could not parse (their columns stay empty)",
+      "binary_stderr_log_semantics": "path of the binary's complete stderr for this event, written next to the frame directory as <output-dir>/<frame directory name>.binary.log (not inside it, because the binary rejects files it did not write when it resumes a directory); the first lines record the command and the exit code. null when it could not be written",
+      "binary_totals_fields": ["processed_frames", "skipped_frames", "frames_with_skipped_fftcc", "frames_with_fallback_fftcc", "frames_with_poi_fallback", "pois_submitted_to_poi_fallback", "pois_recovered_by_poi_fallback", "frames_with_temporal_seed", "pois_seeded_by_temporal_extrapolation", "resume_verified_files", "verified_complete_run"],
+      "binary_totals_semantics": "the end-of-run counters the multi-frame binary prints on stderr, parsed when present (CSV runs write no manifest, so this is where whole-frame fallback counts appear); keys the binary did not print are absent, and the whole field is null when none was found",
+      "binary_exit_code_semantics": "exit code of the binary for this event, null when it never ran",
+      "remediation_semantics": "one actionable sentence for a binary failure that matched a known rejection (resume rejected, duplicate output name, untracked or ledger-less frame directory, locked directory, invalid GPU device, no POI, damaged frame, non-UTF-8 path, unreadable image, size mismatch, GPU out of memory), otherwise generic advice; null when the binary succeeded",
+      "warning_details_fields": ["code", "severity", "detail"],
+      "warning_details_semantics": "every entry, the info ones included, with its code, severity (info, warn or fail as applied in this run; with --strict, codes listed under strict_severity fail) and full detail (the text after the first ':' or null), in the order found; it is the list the verdict is computed from. The warnings list next to it keeps the 638ad18 meaning: only the warn and fail entries, for codes 638ad18 already emitted in exactly its text (input_8bit_max_255: possible saturation_or_high_bit_truncation, the bare gpu_cli_failed, ...), for newer codes 'code: detail'. Top-level warning_details may also hold the --strict pre-check's warnings and notes, each with stage 'strict_precheck' and, when per event, 'event' (dry-run codes, outputs.dry_run); the warn-level ones also appear in the top-level warnings as 'code: message [event X]'.",
+      "global_fields": ["wall_time_s", "events_ok", "events_failed"],
+      "event_selection_fields": ["events_argument", "patterns", "events_discovered", "events_selected", "events_excluded", "excluded_events", "interface_y_default", "interface_y_overrides"],
+      "event_selection_semantics": "campaign only, null for a single event (and absent from failure summaries): events_argument = --events as given (null: every event), patterns = its items, events_discovered = subdirectories with a recognized image, events_selected / events_excluded = how many --events keeps / leaves out, excluded_events = their names, interface_y_default = --interface-y (null with --line-y or in full-field mode), interface_y_overrides = one object per --event-interface-y option: argument, pattern, interface_y, events (the selected events it applies to). The dry-run has the same object (added 2026-10-05)",
+      "verdict_choices": ["ok", "warn", "fail"],
+      "verdict_rule": "computed from warning_details: fail if any event failed or any entry has severity fail (pipeline_error); otherwise warn if any entry, top-level or per event, has severity warn; otherwise ok. info entries never change the verdict and never appear in the warnings lists, so warnings is empty under ok. The top-level lists carry binary, provenance, argument and --strict pre-check entries only, so they can be empty while the verdict is warn: always read events[].warnings (or warning_details).",
+      "warnings_location": "events[].warnings for per-event codes, top-level warnings for binary, provenance and argument codes; both exist only when --json-summary is given (the console prints warn and fail reasons either way)",
+      "warning_vocabulary": [
+        {"code": "insufficient_images", "where": "event", "severity": "fail", "meaning": "the event directory has fewer than 2 recognized images (with --json-summary a campaign reports such an event instead of skipping it)", "action": "check the directory and --image-pattern"},
+        {"code": "gpu_cli_failed", "where": "event", "severity": "fail", "meaning": "the binary exited non-zero. The warnings list carries the bare code, as in 638ad18; the warning_details detail is 'exit=<code>' plus the binary's first 'Error:' line. The frame directory is kept, the full stderr is in binary_stderr_log and remediation says what to do", "action": "follow remediation; 'resume rejected' means the output directory holds a different earlier run, so use a new --output-dir"},
+        {"code": "cod_uy_column_missing", "where": "event", "severity": "fail", "meaning": "--cod-method fillboundary needs the 9-column frame CSV and found fewer columns", "action": "use a binary that writes 9 columns, or drop --cod-method fillboundary (the default naive needs no uy column)"},
+        {"code": "cod_aggregation_failed", "where": "event", "severity": "fail", "meaning": "COD mode found no frame CSV to aggregate", "action": "inspect the frame directory and the binary output"},
+        {"code": "cod_empty", "where": "event", "severity": "fail", "meaning": "the COD CSV has a header and no data row (a line outside the image or inside the binary margin, a reversed --roi-cols, or no point valid on both lines); the header-only file is still written; the frame CSVs are deleted as after any aggregation (kept with --keep-frames or --strict)", "action": "run --dry-run with the same arguments; check --interface-y/--gauge/--line-y/--roi-cols against the image"},
+        {"code": "cod_line_missing", "where": "event", "severity": "fail", "meaning": "a measurement line has no row in any frame CSV; the binary skipped it (see binary_warning)", "action": "move the line out of the binary margin (subset radius + 2 px from the image edge)"},
+        {"code": "pipeline_exception", "where": "event", "severity": "fail", "meaning": "an unexpected exception inside the event (recorded only with --json-summary; without it the exception aborts the run)", "action": "read the message; report it with the full command"},
+        {"code": "cod_all_zero", "where": "event", "severity": "warn", "strict_severity": "fail", "meaning": "every written cod_um is 0.0000: both lines on one row (--gauge 0 or 1, equal --line-y values), --cal 0, or no motion at 4-decimal precision", "action": "check the line geometry in events[].geometry"},
+        {"code": "cod_frames_without_points", "where": "event", "severity": "warn", "meaning": "some target frames have no COD point at all", "action": "inspect those frames (valid_ratio, binary_totals, the binary stderr log)"},
+        {"code": "binary_warning", "where": "event", "severity": "warn", "meaning": "a 'Warning:' line the binary printed on a successful run (for example a measurement line skipped for being too close to the edge); at most five, then a count", "action": "read the warning; the full stderr is in binary_stderr_log"},
+        {"code": "stale_cod_csv", "where": "event", "severity": "warn", "meaning": "the event failed and a COD CSV at its target path was not written by this run; events[].cod_csv is null", "action": "do not use that file as this run's result; use a new --output-dir"},
+        {"code": "cod_csv_replaced", "where": "event", "severity": "warn", "meaning": "the run replaced a COD CSV that existed before it started (for example two single-event runs into one --output-dir both write cod_result.csv)", "action": "use a new --output-dir per run; earlier summaries may now name a file with different content"},
+        {"code": "duplicate_frame_number", "where": "event", "severity": "warn", "strict_severity": "fail", "meaning": "two or more target images share a frame number, so the binary rejects the duplicate output names (the event fails with gpu_cli_failed)", "action": "check --image-pattern and remove duplicate files such as macOS '._*' copies"},
+        {"code": "duplicate_reference_frame_number", "where": "event", "severity": "warn", "meaning": "more than one image carries the reference frame number; the first in name order is the reference and the others are not used (the run itself succeeds, also under --strict)", "action": "make sure the intended image is the reference; check --image-pattern and files such as macOS '._*' copies"},
+        {"code": "valid_ratio_below_0.95", "where": "event", "severity": "warn", "meaning": "pooled finite zncc >= 0 fraction below 0.95", "action": "look for low texture, out-of-range bands, large motion or frame fallback"},
+        {"code": "zncc_median_below_0.9", "where": "event", "severity": "warn", "meaning": "median zncc of the valid rows below 0.9", "action": "check image quality, subset size and decorrelation"},
+        {"code": "frame_stats_unavailable", "where": "event", "severity": "warn", "meaning": "no frame rows were found or parsed, so valid_ratio is null", "action": "inspect the frame files"},
+        {"code": "zncc_median_unavailable", "where": "event", "severity": "warn", "meaning": "no valid row, so zncc_median is null", "action": "treat the event as unmeasured"},
+        {"code": "input_8bit_max_255", "where": "event", "severity": "info or warn", "meaning": "the reference frame, read at effective depth 8, has at least one pixel equal to 255. As a warning its text in the warnings list is the 638ad18 one, 'input_8bit_max_255: possible saturation_or_high_bit_truncation'; the graded fraction, the threshold, the whole-frame fraction and (COD mode) each measurement line's band, band fraction and saturated-subset fractions are in the warning_details detail, and as fields in events[].input_saturation. The graded fraction is, in COD mode, the largest fraction of pixels at 255 among the measurement-line bands (the pixels of each line's subsets that enter the COD aggregation) and, in full-field mode, that of the whole frame (input_saturated_fraction). info when it is at most --saturation-warn-fraction (default 0.05) and the file is an 8-bit container; warn above it, when it is unknown (no line has a band), or when the container is deeper than 8 bits (possible high-bit truncation of a 16-bit file read as 8-bit). The dry-run forecasts the level (events[].input_saturation.severity). A heuristic, not proof", "action": "for warn: read events[].input_saturation (which line, how many of its subsets are saturated), look at those bands in the reference image (docs/quality-checks.md section 5) and check the source bit depth with --dry-run"},
+        {"code": "frame_csv_read_errors", "where": "event", "severity": "warn", "meaning": "some frame files could not be parsed and were left out of the statistics", "action": "inspect those files"},
+        {"code": "preexisting_frame_csv_detected", "where": "event", "severity": "warn", "meaning": "the frame directory already held frame files and the binary did not report verifying them (an older binary without the ledger, or a reused directory)", "action": "use a new --output-dir"},
+        {"code": "frame_count_differs_from_mode", "where": "event", "severity": "warn", "meaning": "in a campaign, this event's frame count differs from the unique most common count", "action": "check for missing or extra images"},
+        {"code": "effective_input_reference_unavailable", "where": "event", "severity": "warn", "meaning": "the binary's 'Reference input:' line was not found, so input_reference is null", "action": "check the binary version and log"},
+        {"code": "resumed_verified", "where": "event", "severity": "info", "meaning": "the frame directory held frames of a matching earlier run and the binary verified them against its ledger ('Verified complete run' or 'Resume: N verified files') instead of recomputing or mixing them", "action": "none"},
+        {"code": "max_frames_applied", "where": "event", "severity": "info", "meaning": "--max-frames limited the run to the first N of the available target frames", "action": "none; rerun without it for the whole sequence"},
+        {"code": "frame_fallback_used", "where": "event", "severity": "info", "meaning": "binary_totals.frames_with_fallback_fftcc > 0: some frames needed the whole-frame FFTCC fallback", "action": "treat valid POIs with zncc < 0.8 in those frames as suspect (docs/quality-checks.md section 7); the binary stderr log names the frames"},
+        {"code": "binary_log_unavailable", "where": "event", "severity": "info", "meaning": "the <frame directory>.binary.log file could not be opened; the binary's stderr was kept in memory only (binary_stderr_log is null) and parsed as usual", "action": "check that the output directory is writable"},
+        {"code": "pipeline_error", "where": "top-level", "severity": "fail", "meaning": "normal execution stopped before running any event (binary not found, --cal missing in COD mode, an unparsable --roi-cols, --line-y or --image-pattern, a missing input directory, no event found, an output directory that cannot be created, --strict validation failed with one entry per error, or the summary itself could not be written: summary_write_failed); events is empty and events_failed is 1", "action": "fix the reported problem; run --dry-run with the same arguments first"},
+        {"code": "argument_warning", "where": "top-level", "severity": "warn", "meaning": "without --strict, an argument the dry-run rejects but normal execution has always accepted; detail starts with the dry-run error code (for example invalid_subset_size, invalid_cal, invalid_gauge, line_y_not_distinct, roi_cols_out_of_bounds, invalid_conv_threshold, invalid_gpu_device, invalid_input_alignment, invalid_step) and says what the run did instead", "action": "fix the argument; --strict refuses such runs with exit 2"},
+        {"code": "gpu_bin_outside_checkout", "where": "top-level", "severity": "info", "meaning": "the binary came from the environment, a config file, another FASTICGN_HOME or the deprecated lab path, not from --gpu-bin or this checkout's build/ trees (normal for a lab deployment configured through the config file)", "action": "pass --gpu-bin when a specific build must be used"},
+        {"code": "binary_version_probe_failed", "where": "top-level", "severity": "warn", "meaning": "running the binary with --version failed, so provenance is missing", "action": "check the resolved binary path"},
+        {"code": "binary_git_hash_unavailable", "where": "top-level", "severity": "warn", "meaning": "--version printed no git_hash", "action": "provenance cannot be proven; rebuild from a git checkout"},
+        {"code": "binary_build_date_unavailable", "where": "top-level", "severity": "warn", "meaning": "--version printed no build_date", "action": "provenance cannot be proven"}
+      ],
+      "warning_vocabulary_note": "codes are the stable prefixes of the warning strings (text after the first ':' is detail); every code the pipeline emits is listed here (a unit test enforces it). severity is the level in normal runs, strict_severity the level under --strict where it differs. The verdict depends on severity only (verdict_rule). info codes appear only in warning_details, never in the warnings lists.",
+      "frames_semantics": "number of target/output frames; the fixed reference frame is excluded",
+      "valid_ratio_semantics": "pooled finite(zncc) && zncc>=0 rows divided by all rows in successfully parsed frame CSV files; an unreadable entire frame is excluded and reported via warning",
+      "strict_json": "NaN and Infinity are forbidden"
+    },
+    "dry_run": {
+      "schema_version": 1,
+      "required_top_level_fields": ["schema_version", "dry_run", "valid", "exit_code", "gpu_started", "filesystem_writes", "errors", "warnings", "notes", "events"],
+      "full_plan_additional_fields": ["input", "output_state", "resolved_params", "estimates", "known_limitations", "event_selection"],
+      "minimal_variants": ["argument_parse_error", "dry_run_exception"],
+      "event_fields": ["name", "image_dir", "images", "reference_frame", "target_frames", "target_frames_available", "target_frame_range", "first_frame", "input_recommendation", "input_saturation", "tar_list_path", "tar_entries", "binary_command", "field_dir", "cod_csv", "binary_stderr_log", "output_state", "geometry"],
+      "event_semantics": "target_frames is what the run will compute (after --max-frames), target_frames_available what was found, target_frame_range the first and last planned frame numbers. binary_command is the exact argv of the real run (relative binary paths are already absolute). binary_stderr_log is where the real run will keep the binary's stderr. geometry is the event's geometry as the summary's events[].geometry will give it (per-event lines and interface_y with --event-interface-y); resolved_params.geometry is the run-wide default. With --events only the selected events are listed; input.events_with_images counts every event found, event_selection the selected ones.",
+      "input_saturation_semantics": "the object the run's summary will carry as events[].input_saturation (outputs.json_summary.input_saturation_semantics), computed from the same reference image with the same code and the same effective geometry and --saturation-warn-fraction; severity forecasts the level of input_8bit_max_255 (null: no pixel at 255, no warning). null when the reference will not be read at effective depth 8: --input-depth 12 or 16, or auto with a container deeper than 8 bits (auto reads an 8-bit file as 8-bit), or when the first frame cannot be probed. It is not a dry-run warning: the plan's warnings and notes do not change.",
+      "input_fields": ["mode", "path", "event_subdirectories", "events_with_images"],
+      "output_state_fields": ["path", "exists", "is_directory", "writable", "nearest_existing_ancestor"],
+      "output_state_semantics": "the --output-dir as it is now: writable means the existing directory is writable, or, when it does not exist yet, that its nearest existing ancestor is a writable directory so it can be created",
+      "event_output_state_fields": ["frame_dir", "frame_dir_exists", "frame_dir_is_directory", "frame_dir_entries", "ledger_contract", "ledger_complete_record", "untracked_entries", "binary_expectation", "cod_csv_exists", "binary_stderr_log_exists", "ledger_targets"],
+      "event_output_state_semantics": "binary_expectation, from file names only: fresh (no frame directory, an empty one, or only a tar_list.txt left by a failed run), resume_if_unchanged (a ledger contract exists and the planned targets start with its target list: the binary resumes or verifies it when binary, inputs and parameters are unchanged, and rejects the run otherwise), reject_targets_changed (the planned targets do not start with the ledger's list, for example --max-frames shortened it; ledger_targets is the recorded count), reject_untracked (entries without a ledger, which the binary rejects), fail_not_a_directory (a file occupies the frame directory path)",
+      "first_frame_fields": ["path", "width", "height", "pillow_mode", "dtype", "container_bit_depth", "pixel_min", "pixel_max", "low_4_bits_all_zero"],
+      "input_recommendation_fields": ["input_depth", "input_align", "suggested_args", "reason", "limitations", "auto_limitation"],
+      "issue_fields": ["code", "message", "event", "severity"],
+      "issue_semantics": "event is present for per-event issues; severity is present on warnings and notes. errors are always blocking; warnings (severity warn) need a look before running; notes (severity info) are context only. As in 638ad18, a deployment configured through the config file (no --gpu-bin) gets an empty warnings list: gpu_bin_outside_checkout, line_y_overrides_interface_y, max_frames_applied and json_summary_ignored are notes. The minimal variants (argument_parse_error, dry_run_exception) have every required_top_level_fields entry too, with empty warnings, notes and events.",
+      "error_codes": ["argument_parse_error", "dry_run_exception", "invalid_subset_size", "invalid_step", "invalid_gauge", "invalid_cal", "missing_cal", "cod_requires_csv_frames", "invalid_image_pattern", "invalid_conv_threshold", "invalid_gpu_device", "invalid_input_alignment", "gpu_binary_missing", "gpu_binary_not_executable", "gpu_binary_unresolved", "gpu_bin_legacy_lab_path", "invalid_roi_cols", "invalid_line_y", "output_dir_not_directory", "output_dir_not_writable", "input_directory_missing", "no_event_images", "no_images", "insufficient_images", "duplicate_frame_number", "input_depth_truncates_container", "image_probe_failed", "image_too_narrow_for_subset", "interface_y_out_of_bounds", "line_y_not_distinct", "line_y_out_of_bounds", "line_y_inside_binary_margin", "roi_cols_out_of_bounds", "roi_has_no_poi_columns", "frame_dir_not_directory", "frame_dir_targets_changed", "frame_dir_untracked", "invalid_events", "events_requires_photo_dir", "event_not_found", "event_pattern_no_match", "no_events_selected", "invalid_event_interface_y", "event_interface_y_requires_photo_dir", "event_interface_y_requires_interface_y", "event_interface_y_with_line_y", "event_interface_y_no_match", "event_interface_y_conflict"],
+      "error_code_notes": "gpu_bin_legacy_lab_path and input_depth_truncates_container occur only with --strict (the second when the first frame's container is deeper than 8 bits and the effective --input-depth is 8; its message gives the probe's recommendation). line_y_not_distinct and the ordering/negativity part of roi_cols_out_of_bounds are checked once without reading images and therefore carry no event; the image-width part of roi_cols_out_of_bounds and the line bounds are per event. duplicate_frame_number covers duplicate target numbers only (the binary rejects the output names); a duplicate of the reference number is the warning duplicate_reference_frame_number, because that run succeeds. frame_dir_targets_changed: an existing ledger records a target list the planned one does not start with. The --events / --event-interface-y codes (invalid_events through event_interface_y_conflict) carry no event except event_interface_y_conflict; normal execution refuses them with exit 2 in every mode, unlike the other argument checks.",
+      "warning_codes": ["json_summary_ignored", "event_without_images", "input_mode_differs_from_probe", "path_resolution", "gpu_bin_outside_checkout", "line_y_overrides_interface_y", "max_frames_applied", "cod_csv_exists", "frame_dir_has_ledger", "duplicate_reference_frame_number"],
+      "warning_code_semantics": {
+        "json_summary_ignored": "info: --json-summary was given; dry-run writes its JSON to stdout instead",
+        "event_without_images": "warn: a campaign subdirectory has no recognized image and will be skipped",
+        "input_mode_differs_from_probe": "warn: the requested input depth/alignment differs from the first-frame probe's input_recommendation; the plan stays valid and the real run would use the requested mode (for a 16-bit source read as 8-bit, silently)",
+        "path_resolution": "warn: a note from binary path resolution, such as the deprecated lab path or an unreadable config file",
+        "gpu_bin_outside_checkout": "info: the binary does not come from --gpu-bin or this checkout's build/ trees (see the --gpu-bin parameter)",
+        "line_y_overrides_interface_y": "info: --line-y and --interface-y were both given; --line-y wins and the fill-boundary target is its midpoint",
+        "max_frames_applied": "info: --max-frames plans fewer target frames than were found",
+        "cod_csv_exists": "warn: the event's COD CSV already exists and the run would replace it",
+        "frame_dir_has_ledger": "warn: the frame directory holds an earlier run's ledger; the binary resumes it only when binary, inputs, parameters and target prefix are unchanged and rejects the run otherwise (fingerprints are not compared here)",
+        "duplicate_reference_frame_number": "warn: more than one image carries the reference frame number; the first in name order is the reference and the others are not used (the run succeeds, also under --strict)"
+      },
+      "not_checked": "--dry-run does not run the binary or check that --gpu-device exists, and it does not compare the binary or input fingerprints of an existing ledger (only its target list), so a plan can still be valid while the real run is rejected (resume rejected, invalid device ordinal)",
+      "resolved_params_additional_fields": ["subset_radius", "line_ys", "roi_cols_parsed", "geometry"],
+      "estimate_fields": ["rough", "basis", "mode", "target_frames", "frame_rows", "runtime_s", "runtime_s_range", "calibration", "peak_output_bytes", "retained_output_bytes"],
+      "estimate_semantics": "runtime_s = start-up + frame rows x a per-row cost for the mode (cod, full_field_csv or full_field_raw; frame rows = target frames x POIs per frame), measured end to end (pipeline start-up, binary, frame parsing, aggregation and, when --json-summary is given, the summary statistics) on the date and binary in calibration; runtime_s_range multiplies it by calibration.range_factors to cover a cold page cache or a busy host. Use the upper end of runtime_s_range, not runtime_s, when you set a timeout. Byte estimates use the measured bytes per frame row of the frame format and per COD row.",
+      "side_effect_contract": "No output directory, tar-list, summary file, or GPU process is created by the pipeline. stdout is the JSON result.",
+      "exit_codes": {"valid": 0, "errors_present": 2}
+    }
+  },
+  "mcp": {
+    "implementation": "pipeline/mcp_server.py",
+    "dependency": "fastmcp==3.4.4",
+    "dependency_file": "pipeline/requirements-mcp.txt",
+    "transport": "stdio",
+    "server_name": "FastICGN",
+    "server_version": "serverInfo.version is the package version from pyproject.toml (1.2.0 on 2026-10-19), not the FastMCP version",
+    "interface_revision": 3,
+    "interface_revision_note": "revision 3 (2026-10-19): dic_describe() without arguments stopped carrying the whole mcp section and exit_codes: it returns the before-run keys of the mcp section and lists the others, which are read with section='mcp.<key>' (results.envelope names every key that left the default reply); the job model: the control key wait (false returns a job handle instead of blocking), progress in the job record and a ninth tool, dic_job_cancel (jobs; blocking calls and their replies are unchanged); and cod_um is described as the slip across the interface, not an opening. Later on 2026-10-19, without a revision change, the lab-only pitfalls moved out of pitfalls into the new top-level section lab_notes (highspeed2 bit depth, the 30 kN line conventions, parameter regimes, spaced paths in old binaries, campaign event counts): dic_get_pitfalls and section='pitfalls' keep the six general entries, dic_describe(section='lab_notes') returns the five lab entries, and the default dic_describe() reply only lists that section. revision 2 (2026-10-03): typed params schema, server instructions, tool titles and annotations, structured error fields, job runner with job record, bounded manifest queries, stricter aggregation output rules; with the batch-2 pipeline also max_frames, plans and runs in the pipeline's --strict mode, a brief built from the summary's geometry, cod_stats and warning severities, and dic_describe answering with an index by default; after review 2026-10-04 also compact replies for plans and campaigns of more than 10 events within a hard size cap, a hard max_bytes for dic_query_manifest, failed events named in the brief and in condensed lists, adoption of a job whose runner was killed, rejection of output_dir inside another run, and structured errors for names that are not UTF-8. On 2026-10-05, without a revision change, the default of the run parameter cod_method and of dic_aggregate_cod's method went from fillboundary to naive (fillboundary stays selectable; a five-column frame CSV now aggregates under the default) and run_params.campaign_keys were added. Revision 1 was the 2026-07-10 server with an untyped params object. Plans report it as mcp.interface_revision.",
+    "instructions": "sent at initialize (SERVER_INSTRUCTIONS in mcp_server.py), at most 3000 characters, in this order: what COD mode measures; the workflow dic_probe_images -> dic_plan -> run tool (max_frames for a trial) -> check ok, verdict, events[].warning_details and mcp.brief (--strict, so a failed event means ok false); long jobs (wait=false, polling the job record, dic_job_cancel, never cancel a job you did not start); then traps (subset SIZE, cal mm/px, line_y order, naive COD, 12-bit TIFFs, zncc < 0, output_dir reuse, gpu_busy) and campaign keys; errors and isError; compact replies above 10 events; dic_describe gives the before-run part and section='mcp.<key>' the rest. Everything up to and including the long-jobs paragraph lies within the first 1500 characters, because some clients cut a server's instructions at about 2000.",
+    "numeric_core_modified": false,
+    "numeric_core_modified_semantics": "false means the server contains no DIC numerics; it validates input, delegates to dic_pipeline.py and reuses its COD aggregation",
+    "supported_modes": ["cod"],
+    "mode_limitation": "MCP runs COD mode only: dic_plan, dic_run_event and dic_run_campaign require cal and one of interface_y or line_y, so full-field runs are not available through MCP. output_format (raw), image_pattern and image_order are not accepted either, so only images whose file names end in a six-digit frame number with a jpg/jpeg/tif/tiff/png/bmp extension are found. Use the pipeline CLI for anything else. Such requests are rejected with a message that says MCP runs COD mode only (missing_parameter or unknown_params).",
+    "tool_count": 9,
+    "tool_names": [
+      "dic_describe",
+      "dic_get_pitfalls",
+      "dic_probe_images",
+      "dic_plan",
+      "dic_run_event",
+      "dic_run_campaign",
+      "dic_aggregate_cod",
+      "dic_query_manifest",
+      "dic_job_cancel"
+    ],
+    "tools": [
+      {
+        "name": "dic_describe",
+        "parameters": ["section"],
+        "read_only": true,
+        "returns": "without section (or section='index'): {schema_version, contract, view: 'index', full_contract_bytes, sections: [{section, bytes, summary}], included_sections: [] (no section is included whole since 2026-10-05), mcp: the before-run keys of the mcp section (implementation, dependency, dependency_file, transport, server_name, server_version, interface_revision, supported_modes, mode_limitation, tool_count, tool_names, run_params, guardrails), mcp_view: {view: 'before_run', included_keys, on_demand: [{section: 'mcp.<key>', bytes, summary}] for every other key of the mcp section, how}, more}; at most 20480 bytes. section='mcp.<key>' (any key of the mcp section, e.g. 'mcp.results', 'mcp.errors', 'mcp.job_record', 'mcp.manifest_query', 'mcp.known_issues'): {schema_version, section, mcp: {<key>: ...}}, the same JSON path as in the whole contract; the default reply and the on_demand parts together are the whole mcp section. A section name ('mcp', 'outputs', 'exit_codes', ...): {schema_version, section, <section>: ...}. section='all': interface_contract.json as one object (over 120 KB, more than many MCP clients accept in one reply)"
+      },
+      {
+        "name": "dic_get_pitfalls",
+        "parameters": [],
+        "read_only": true,
+        "returns": "schema_version plus interface_contract.json#pitfalls"
+      },
+      {
+        "name": "dic_probe_images",
+        "parameters": ["image_dir"],
+        "read_only": true,
+        "returns": "ok, image count, reference_frame, target_frames, runnable (at least 2 images), first-frame probe, input-depth recommendation and warnings; never starts the GPU"
+      },
+      {
+        "name": "dic_plan",
+        "parameters": ["params"],
+        "read_only": true,
+        "returns": "pipeline --dry-run plan plus ok (= valid), call_id and the mcp block (run_params.plan_mcp_block); MCP warnings are appended to warnings with source 'mcp'. Keys come in the order ok, valid, exit_code, errors, warnings, notes, mcp, estimates, then the rest; with more than 10 events each event is a compact record (results.compact_events) and the reply stays within results.max_reply_bytes"
+      },
+      {
+        "name": "dic_run_event",
+        "parameters": ["params"],
+        "read_only": false,
+        "returns": "the pipeline --json-summary object (schema_version 1, outputs.json_summary) of a completed pipeline invocation, plus ok, call_id and the mcp block (results.run_mcp_block); with wait=false the job handle instead (jobs.handle)"
+      },
+      {
+        "name": "dic_run_campaign",
+        "parameters": ["params"],
+        "read_only": false,
+        "returns": "the pipeline --json-summary object (schema_version 1, outputs.json_summary), plus ok, call_id and the mcp block; at most 120 selected events. Keys come in the order ok, verdict, mcp (brief first), global, then the rest; with more than 10 events each event is a compact record (results.compact_events); the full summary stays in <output_dir>/summary.json; with wait=false the job handle instead (jobs.handle)"
+      },
+      {
+        "name": "dic_aggregate_cod",
+        "parameters": [
+          "frames_dir",
+          "output_path",
+          "line_y",
+          "cal",
+          "method",
+          "roi_cols",
+          "overwrite"
+        ],
+        "read_only": false,
+        "returns": "ok, output_path, method, frames, x_positions, rows, gauge_mm, cod_definition and warnings; ok=false with code no_cod_rows and available_line_ys when the lines are not in the data (nothing is written)"
+      },
+      {
+        "name": "dic_query_manifest",
+        "parameters": ["run_dir", "detail", "fields", "documents", "max_bytes"],
+        "read_only": true,
+        "returns": "ok, run_dir, documents, document_views, available_documents, complete, errors, truncated, max_bytes, and when needed omitted, missing_fields, hint and budget_notes (manifest_query); the whole reply, call_id included, stays within max_bytes"
+      },
+      {
+        "name": "dic_job_cancel",
+        "parameters": ["output_dir", "job_id", "cancel_token"],
+        "read_only": false,
+        "returns": "ok, action ('cancelled': this call stopped the job; 'none': nothing was signalled because the job had already ended or ended by itself; 'settled': no process was left and the stale record was closed), state (the record's final state), job_id, output_dir, job_record, job (state, tool, gpu_device, exit_code, ended_at, wall_s, cancel_reason, verdict, note), progress, partial (frame_files, summary_json), processes (runner_alive, job_group_alive), note, and hint after 'cancelled'; rejections job_not_found, job_id_mismatch, job_not_owned, cancel_failed (jobs.cancel_outcomes)"
+      }
+    ],
+    "run_params": {
+      "schema": "tools/list publishes params as a typed object: every key has a type, unit, enum or range, default and a one-sentence description. Validation stays in the server, so a bad value returns a structured ok=false result, not a protocol error. Calling a plan/run tool without the params wrapper is rejected with one explicit message.",
+      "required": [
+        "image_dir (dic_run_event) or photo_dir (dic_run_campaign); dic_plan takes exactly one of them",
+        "output_dir",
+        "cal",
+        "interface_y or line_y (line_y wins when both are given)"
+      ],
+      "allowed_pipeline_keys": [
+        "photo_dir",
+        "image_dir",
+        "output_dir",
+        "interface_y",
+        "line_y",
+        "cal",
+        "subset",
+        "step",
+        "roi_cols",
+        "gauge",
+        "cod_method",
+        "conv_threshold",
+        "input_depth",
+        "input_align",
+        "input_normalize",
+        "gpu_device",
+        "keep_frames",
+        "max_frames",
+        "events",
+        "event_interface_y"
+      ],
+      "allowed_pipeline_keys_note": "mirrors PIPELINE_PARAM_KEYS in mcp_server.py; test_mcp_server checks that it, control_keys and the published schema keys agree",
+      "campaign_keys": "dic_plan, dic_run_campaign: events [name or glob, no comma] -> --events; event_interface_y [{pattern, interface_y}] -> --event-interface-y PATTERN=Y each; only when given. MCP checks JSON shape, the pipeline dry-run the values; name lists in event_selection keep 10 (mcp.event_selection_view)",
+      "value_types": "paths are absolute strings; numbers are JSON numbers (the string '0.5641' is rejected with a hint); input_depth, input_align and input_normalize are strings (input_depth '12', not 12: an integer is rejected with that hint); line_y and roi_cols take the forms below; keep_frames and overwrite are booleans; max_frames is an integer >= 1 (pipeline --max-frames: only the first N target frames of each event; the plan's estimates and suggested timeout use the same N)",
+      "strict": "server behaviour, not a parameter: dic_plan and the run tools always pass --strict to the pipeline, so the plan and its run judge the inputs alike and cod_all_zero / duplicate_frame_number count as failures. The pipeline then repeats every dry-run check before it writes anything; if that check fails (exit 2, possible only when the inputs, the binary or output_dir changed after the MCP plan check) the run tool returns plan_invalid with the pipeline's errors, output_dir and job_record. An event that failed ends the pipeline with exit 3 and the run tool still returns the summary (verdict fail, ok false, mcp.job.exit_code 3). For a campaign the check is all or nothing: one event the dry-run refuses (for example a subdirectory with a single image, or a 16-bit event that would be read as 8-bit) makes the plan invalid and the run tool returns plan_invalid without running any event; run the other events as their own campaign.",
+      "coordinates": "line_y holds two distinct non-negative rows; the order is kept and sets the sign (COD = u(L0) - u(L1); a descending pair adds warning line_y_descending). roi_cols needs 0 <= x_min <= x_max; interface_y >= 0. There is no negative or -1 'full range' shorthand. interface_y and gauge are ignored when line_y is given (warning interface_y_ignored / gauge_ignored).",
+      "gpu_device": "integer >= 0 and below the number of CUDA devices the server sees (CUDA_VISIBLE_DEVICES, else /proc/driver/nvidia/gpus); when that number is unknown the plan warns gpu_device_unverified",
+      "control_keys": ["timeout", "overwrite", "wait"],
+      "wait": "control key, boolean, default true: the run tool blocks until the job ends and returns the summary, as before. false: the tool returns as soon as the job has started, with the job handle (job_id, output_dir, job_record, summary_json, cancel_token, mcp.poll, mcp.cancel) instead of the summary; the job is then watched with dic_query_manifest(run_dir=output_dir, documents=['.mcp-job.json']) and stopped with dic_job_cancel. Every refusal that happens before the job starts (plan_invalid, gpu_busy, output_exists and the rest) comes back as for a blocking call. dic_plan accepts and ignores it. Details: dic_describe(section='mcp.jobs')",
+      "forbidden_keys": ["gpu_bin", "json_summary", "dry_run", "describe", "strict"],
+      "cli_only_keys": ["output_format", "image_pattern", "image_order"],
+      "line_y_and_roi_cols_forms": ["comma-separated two-integer string", "two-integer JSON array"],
+      "timeout_default_seconds": 600,
+      "timeout_hint": "dic_plan reports mcp.suggested_timeout_s = 60 s + 0.04 s per target frame, capped at 3600 (a heuristic from the lab host, where 800-frame 8-bit events took 5-26 s end to end); estimates.runtime_s is GPU-only and optimistic",
+      "overwrite_semantics": "false rejects every existing output. true permits an existing empty run directory, but non-empty run directories remain rejected so stale frames are never mixed or deleted. dic_aggregate_cod may atomically replace its one explicit output_path when overwrite=true, never a file inside a run directory.",
+      "plan_mcp_block": [
+        "fixed_gpu_binary",
+        "gpu_binary_source",
+        "read_allowlist",
+        "read_allowlist_source",
+        "job_root",
+        "job_root_source",
+        "path_resolution_notes",
+        "audit_log_write_excluded_from_pipeline_filesystem_writes",
+        "server_version",
+        "interface_revision",
+        "gpu_device_count",
+        "gpu_device_count_source",
+        "suggested_timeout_s",
+        "suggested_timeout_basis",
+        "cod_definition"
+      ],
+      "mcp_warnings": [
+        "subset_small",
+        "line_y_descending",
+        "interface_y_ignored",
+        "gauge_ignored",
+        "gpu_device_unverified"
+      ]
+    },
+    "results": {
+      "envelope": "every tool except dic_describe and dic_get_pitfalls adds ok (boolean) and call_id (the audit log id) to its result. Compared with interface revision 1 (638ad18) results gained fields, and these default results changed shape: dic_describe() without arguments returns an index of the sections plus the before-run part of the mcp section instead of the whole contract (section='all' returns the whole contract as before). Since revision 3 (2026-10-19) that default reply no longer holds exit_codes (section='exit_codes') nor these keys of the mcp section, each read with section='mcp.<key>' or all at once with section='mcp': interface_revision_note, instructions, numeric_core_modified, numeric_core_modified_semantics, tools, results, errors, job_record, manifest_query, aggregation, known_issues, error_semantics, dry_run_side_effect_note, client_config; included_sections is now an empty list and mcp_view lists what was left out; dic_query_manifest condenses documents that do not fit max_bytes, so an array such as documents.<doc>.frames can come back as a {_condensed_list: ...} object (detail='full' and fields select the original values); plan and campaign replies with more than 10 events carry one compact record per event (results.compact_events); events[].field_dir is null in the MCP result when the frame directory no longer exists (keep_frames=false; listed in mcp.nulled_paths), while summary.json keeps the path with field_dir_exists false; dic_aggregate_cod rejects strings for numbers and booleans (cal='0.5641', overwrite='true') instead of converting them; and runs use --strict, so cod_all_zero fails its event. A run tool called with wait=false (2026-10-05) returns the job handle (jobs.handle) instead of the summary; without wait, or with wait=true, the reply is what it was.",
+      "ok_semantics": "dic_plan: ok = valid. Run tools: ok = verdict ok or warn, the pipeline exited 0 and every ok event's COD CSV exists with at least one data row (otherwise warning cod_csv_empty); after a killed job runner the exit code is unknown and mcp.warnings has job_runner_lost. Runs use --strict (run_params.strict): exit 3 = an event failed, returned as the summary with ok false; exit 2 = the pipeline's own check refused, returned as plan_invalid. dic_aggregate_cod: ok = COD rows were written. dic_query_manifest: ok = no document failed to load. dic_probe_images: ok = the directory was probed; see runnable.",
+      "run_mcp_block": [
+        "output_dir",
+        "summary_json",
+        "job_record",
+        "job (state, exit_code, wall_s)",
+        "brief (one line: verdict, events ok, top-level warnings, and per event (first 3) status, frames, valid_ratio, zncc_median, the measurement rows used, COD rows and peak value, warnings as code(severity); with campaign keys the lines per event group)",
+        "cod_definition",
+        "warnings (MCP warnings)",
+        "nulled_paths",
+        "stdout_tail, stderr_tail, error_lines, hint (only when the run failed)"
+      ],
+      "nulled_paths": "events[].cod_csv and events[].field_dir values that do not exist on disk are set to null in the MCP result (summary.json on disk keeps the pipeline's value, and field_dir_exists says the same) and listed in mcp.nulled_paths with the reason; with keep_frames=false the frame directory is always gone. Above 10 events the entries are grouped by field and reason (results.compact_events)",
+      "cod_definition": "L0_y, L1_y, formula (cod_um = (u_L0 - u_L1) * cal * 1000 for naive, the default since 2026-10-05; with cod_method fillboundary each u is first extrapolated to the midpoint row), line_order and sign_convention_note (cod_um is the slip across the interface, the relative displacement of its two sides, L0 side minus L1 side, not an opening; positive when u_L0 > u_L1, so the order of the lines alone sets the sign); per_event_lines with event_interface_y",
+      "is_error": "structured rejections are normal results (isError=false). Only MCP-level schema failures and a missing params wrapper come back as isError=true tool errors (and, defensively, a SystemExit raised outside a tool's own handler).",
+      "ordering": "plan replies start with ok, valid, exit_code, errors, warnings, notes, mcp, estimates; run replies with ok, verdict, mcp (brief first), global, so a client that reads or truncates from the top sees the verdict first",
+      "compact_events": "with more than 10 events (plans and campaign runs) each event is one record: runs {name, status, frames, valid_ratio, zncc_median, cod_rows, cod_peak_um, warnings (warn/fail codes as code(severity))}, plans {name, images, reference_frame, target_frames, target_frames_available, width, height, container_bit_depth, binary_expectation, errors, warnings (codes)}, with campaign keys plus line_ys, interface_y*. mcp.events_view says so: view, events, threshold, failed (runs: names of the failed events) or with_errors (plans), for runs failure_reasons ([{reason, count, events}]: each failed event's first fail-level warning as one 'code: detail' line, identical lines merged), full_summary and how_to_read (dic_query_manifest(run_dir=output_dir, documents=['summary.json'], fields=['events[3]']) for one event in full; for plans dic_plan on one event). In this view mcp.nulled_paths has one entry per field and reason ({field, reason, count, events (first 10), more_events, example_path}). Up to 10 events the reply keeps every field",
+      "max_reply_bytes": "every reply of dic_plan, dic_run_event and dic_run_campaign stays within 49152 bytes of compact JSON, call_id and the omitted notes included: plans and run results, and also their rejections (plan_invalid from the plan check or from the pipeline's own --strict check, timeout, pipeline_failed, job_lost and the rest). Small replies are unchanged. Run results leave out, in this order, the stdout/stderr tails, params, list tails, events (failed ones kept first) and then all but ok, verdict, global and the essential mcp fields (brief, job, events_view with the failed events, their reasons and how_to_read, error_lines, hint); plans leave out known_limitations, list tails, events (those with errors kept first) and error tails; rejections leave out the tails, then the tails of errors, warnings and error_lines (for plan_invalid error stays the JSON text of the errors kept), then long strings. Each step is a note in mcp.omitted (plans, runs) or the top-level omitted (rejections): the field, how many were kept and the total, and where or how to read it in full"
+    },
+    "errors": {
+      "shape": ["ok=false", "code", "error", "call_id", "retryable"],
+      "optional_fields": [
+        "field",
+        "got (bounded echo of the rejected value)",
+        "expected",
+        "hint",
+        "holder (gpu_busy, output_busy)",
+        "errors and warnings (plan_invalid; error still holds the errors as a JSON string; when the pipeline's own --strict check refused a run, also output_dir and job_record)",
+        "omitted (a reply of dic_plan or a run tool cut to results.max_reply_bytes: field, kept_each and total, how_to_read or where)",
+        "suggestions (unknown_params)",
+        "available_line_ys, available_line_ys_count, first_frame (no_cod_rows)",
+        "output_dir, job_record, partial (timeout, job_cancelled)",
+        "job: state, tool, gpu_device, created_at, deadline_at (job_not_owned)",
+        "output_dir, job_record, stdout_tail, stderr_tail, error_lines (job_lost: the job runner was killed and the pipeline ended without a summary)",
+        "stdout_tail, stderr_tail, error_lines, job_state (pipeline_failed)",
+        "directory_entries, sample_names (no_images)",
+        "exception (internal_error)"
+      ],
+      "codes": {
+        "paths": [
+          "invalid_path",
+          "unsafe_path_characters",
+          "read_path_missing",
+          "read_path_denied",
+          "read_symlink_denied",
+          "not_a_directory",
+          "not_a_file",
+          "write_path_denied",
+          "reserved_write_path",
+          "invalid_write_path",
+          "nested_output_dir",
+          "unsafe_job_root",
+          "job_root_unavailable",
+          "image_scan_failed",
+          "no_images"
+        ],
+        "parameters": [
+          "invalid_params",
+          "unknown_params",
+          "invalid_input_mode",
+          "wrong_input_mode",
+          "missing_parameter",
+          "invalid_parameter",
+          "parameter_out_of_bounds",
+          "argument_parse_error",
+          "campaign_too_large",
+          "invalid_events",
+          "invalid_event_interface_y",
+          "event_interface_y_requires_interface_y"
+        ],
+        "runs": [
+          "output_exists",
+          "nonempty_output_rejected",
+          "output_unavailable",
+          "output_busy",
+          "gpu_busy",
+          "lock_error",
+          "plan_invalid",
+          "timeout",
+          "job_cancelled",
+          "pipeline_failed",
+          "invalid_summary",
+          "job_lost"
+        ],
+        "aggregation": [
+          "invalid_frame_name",
+          "aggregation_failed",
+          "cod_uy_column_missing",
+          "no_cod_rows",
+          "aggregate_output_rejected"
+        ],
+        "queries": ["manifest_not_found", "manifest_too_large (per document, in errors[])"],
+        "jobs": ["job_not_found", "job_id_mismatch", "job_not_owned", "cancel_failed"],
+        "server": ["audit_unavailable", "internal_error"]
+      },
+      "retryable": "true only for gpu_busy, output_busy (wait, or another gpu_device), timeout, job_cancelled and job_lost (with a NEW output_dir), and cancel_failed (call dic_job_cancel again)"
+    },
+    "guardrails": {
+      "read_allowlist": "resolved once at server start: $FASTICGN_READ_ALLOWLIST (os.pathsep-separated), else the optional config file [paths].read_allowlist, else the [/data, /media] default. A configured value replaces the default wholesale; the repository root and the MCP job root are always readable.",
+      "read_allowlist_legacy_extra": "a historical deployment convention also keeps <operator home>/DIC* readable, and only while that home directory really exists; it adds to the allowlist and never replaces it.",
+      "job_root": "resolved once at server start: $FASTICGN_JOB_ROOT, else the optional config file [paths].job_root, else ~/dic_jobs. <job_root> below means this directory.",
+      "job_root_permissions": "the job root and <job_root>/.mcp-control are created with mode 0700; existing directories keep their mode",
+      "write_allowlist": ["<job_root> children"],
+      "nested_outputs": "a run's output_dir must not lie inside another run directory (one holding summary.json or .mcp-job.json) or inside any _frames_* directory: nested_output_dir. Output locks are per exact path, so a nested run could otherwise put a foreign entry into a running run's frames directory",
+      "symlink_policy": "all user paths are resolved before allowlist checks; source event-directory and recognized image/frame descendants are validated and symlink descendants are rejected; <job_root> itself must not be a symlink",
+      "path_character_policy": "C0 control characters U+0000..U+001F and DEL U+007F are rejected in user paths, in every name directly under photo_dir (stray files included, as in 638ad18) and in recognized images and frame CSVs, so tar-list records cannot be injected; names that are not valid UTF-8 are rejected where they are read, so every reply can be serialised: photo_dir subdirectories (every one is an event the plan lists), recognized images and frame CSVs (unsafe_path_characters, the name shown with \\xNN escapes). A stray file under photo_dir whose name is not UTF-8 (for example a GBK-named notes file) is accepted, as in 638ad18",
+      "parameter_bounds": {
+        "subset": "odd integer 5..51; SIZE semantics",
+        "step": "integer 1..20",
+        "cal": "finite number >0 and <=10 mm/px",
+        "gauge": "integer 4..200 px",
+        "interface_y": "integer >= 0",
+        "line_y": "two distinct integers >= 0",
+        "roi_cols": "two integers 0 <= x_min <= x_max",
+        "gpu_device": "integer >= 0 and below the visible CUDA device count when it is known",
+        "conv_threshold": "finite number > 0 (no upper bound)",
+        "timeout": "finite seconds >0 and <=3600",
+        "campaign_events": "<=120",
+        "input_align": "right/left/auto only with input_depth=12"
+      },
+      "gpu_binary": "resolved once at server start from $FASTICGN_GPU_BIN, the optional config file, the repository build/ trees, then the deprecated lab path; fixed for the session and agents cannot override it.",
+      "gpu_lock": "non-blocking per-device thread+file lock (flock) under <job_root>/.mcp-control. The job runner inherits the lock descriptor, so the lock lives exactly as long as the job, also after the MCP server exits; a concurrent MCP run returns gpu_busy with the holder (output_dir, start time, whether its server is still alive). A device held for a job whose record is already final is waited for in place, up to 1 s, before gpu_busy is returned: the lock is released some tens of milliseconds after the record says exited.",
+      "output_lock": "non-blocking canonical-output thread+file lock held from the state re-check through execution and the summary read, and inherited by the job runner like the GPU lock; dic_aggregate_cod takes the lock of the run directory it reads from or writes into",
+      "lock_scope": "the locks only coordinate MCP jobs of servers that share one job root (they live in <job_root>/.mcp-control): a pipeline or binary started directly on the same GPU, or a server with another job root (for example another user's ~/dic_jobs), is not seen",
+      "timeout_action": "the job runner terminates the pipeline's process group (SIGTERM, then SIGKILL after 5 seconds) and records timed_out; the server stops the runner itself if it has not exited 20 seconds after the timeout",
+      "deletion_tools": false,
+      "audit_log": "<job_root>/mcp_audit.log JSONL; each tool call records a started and a final entry with UTC time, call_id, tool, params (capped at 8 KiB: larger params become a sha256, key list and preview) and result_code, the final entry also duration_s; middleware covers MCP schema rejection before function entry. On SIGTERM/SIGHUP the server writes the final entry of every call in flight (result_code detached for a running job, server_terminated otherwise) before it exits; only SIGKILL leaves a started entry alone. A wait=false call ends with job_started; when its job ends the server, if it is still running, adds job_finished:<verdict or error code> with job_state and exit_code, and detached if it leaves first. dic_job_cancel records cancel:<action>. The value of any argument whose name contains 'token' is written as sha256:<12 hex digits>, never as given: at any depth of the arguments, and also for a call that the schema rejects before the tool runs.",
+      "reserved_write_paths": [
+        "<job_root>/mcp_audit.log",
+        "<job_root>/.mcp-control",
+        "legacy <job_root>/.gpu-*.lock names"
+      ],
+      "error_shape": [
+        "ok=false",
+        "code",
+        "error",
+        "call_id",
+        "retryable",
+        "optional fields: see errors"
+      ]
+    },
+    "jobs": {
+      "summary": "run tools block until the job ends by default (wait=true): unchanged. With wait=false (run_params.wait) the same job is started and the tool returns its handle at once; the job is watched through its job record and stopped with dic_job_cancel. Still one MCP job per GPU: a second job on a busy device is gpu_busy, whichever way the first was started.",
+      "handle": "reply of a run tool called with wait=false: ok true, job_id (the call_id of that call), state (starting or running), output_dir, job_record, summary_json, cancel_token, call_id, and mcp {job (state, wait, tool, gpu_device, timeout_s, deadline_at), poll {tool, arguments, poll_after_s, read}, result {tool, arguments, when, read}, cancel {tool, arguments, note}, cod_definition, warnings (MCP warnings)}. The output_dir is the handle of a job; job_id names it in the audit log.",
+      "poll": "dic_query_manifest(run_dir=output_dir, documents=['.mcp-job.json'], fields=['state', 'progress']): the call a wait=false reply gives in mcp.poll, with poll_after_s (5 s for one event, up to 30 s for a long campaign: a thirtieth of the plan's suggested timeout). The record holds both fields from the start, so such a poll is complete and takes about 0.7 KB; without fields the whole record comes back (about 3 KB). state starting or running: the job is going, and the runner rewrites progress every 3 s (progress_interval_s), also when nothing changed. Final states: exited (the whole record then has exit_code: 0 = every event ok, because runs are --strict, 3 = an event failed; and verdict, events_ok and events_failed copied from summary.json), timed_out, cancelled, spawn_failed, runner_lost, job_lost. The result of an exited job is summary.json, read with dic_query_manifest(run_dir=output_dir, documents=['summary.json']): the object a blocking call returns, without its ok, call_id and mcp additions (no brief, no compact events; the size limit is dic_query_manifest's max_bytes). The GPU lock of an exited job is released within about 0.1 s of the record being written; a run tool waits for it in place (guardrails.gpu_lock), so the next job can be submitted the moment the record says exited.",
+      "progress": "job_record.progress = {updated_at (UTC), elapsed_s, events_total, events_done, frames_total, frames_done, current_event, current_event_frames_done, current_event_frames_total}. The runner counts it from the files the pipeline leaves in output_dir, in plan order: an event has started once its frame directory, COD CSV or binary log exists, and is done once its COD CSV exists, a later event has started or the pipeline has ended. frames_done = the target frames of the finished events (for one that left no COD CSV: the frame files seen) plus the frame_<n>.csv files of the current event; totals come from the plan (max_frames applied). Before the runner has counted anything the record holds the plan's totals with events_done and frames_done 0. The record of a blocking run carries the same progress, so another session can watch it.",
+      "cancel": "dic_job_cancel(output_dir[, job_id][, cancel_token]) sends SIGTERM to the process group of the job runner. The runner stops the pipeline's process group, which holds the binary (SIGTERM, SIGKILL after 5 s), records state cancelled with cancel_reason and exits, which releases the GPU and output locks; a blocking call that was waiting for the job returns job_cancelled. The tool waits for that, and for the job's GPU lock to be free (up to 3 s more; its note says so if it is not), and reports what happened, the final state, the partial output and whether any process is left. The runner is the one that watches the job at that moment: when it is gone (it was killed, or the one that was signalled died before it acted) the job's process group is stopped directly and the job is still recorded as cancelled, also while the server is replacing a lost runner. After 20 s the tool kills what is left itself and records cancelled. Before any signal the process is identified in /proc: its start time must be the one in the job record (runner_start_ticks, job_start_ticks) and its arguments must name the job record (runner) or output_dir (pipeline, binary) exactly, as that directory or a path inside it, so /jobs/run1 never matches a process of /jobs/run10 and a reused pid is not signalled.",
+      "cancel_outcomes": {
+        "action cancelled": "this call stopped the job; output_dir holds partial output and cannot be reused",
+        "action none": "nothing was signalled: the job had already ended (exited, timed_out, cancelled by an earlier call, ...) or ended by itself before the signal took effect. A cancellation repeated after the job has ended is harmless and answers none; two cancellations that arrive while the job is still being stopped both answer cancelled",
+        "action settled": "the record said starting or running, but no process of the job was left and no server was watching it: the record is closed as runner_lost (a summary exists) or job_lost. Any caller may do this",
+        "job_not_found": "output_dir does not exist or holds no .mcp-job.json",
+        "job_id_mismatch": "job_id was given and is not the id of the job in output_dir; nothing is stopped",
+        "job_not_owned": "the job is running, another MCP session started it, and cancel_token is missing or wrong; nothing is stopped",
+        "cancel_failed": "the job could not be stopped (retryable)"
+      },
+      "ownership": "the MCP session (server process) that started a job cancels it with output_dir alone. Any other session needs the cancel_token of the wait=false reply: it is returned once, kept in the job record only as cancel_token_sha256, and written to the audit log only as a hash prefix (guardrails.audit_log; FastMCP's stderr warning about a call that does not match the schema is redacted in the same way). A job id is not a credential: the job record and the holder of a gpu_busy error show it. A job started with wait=true has no token, so only its own session can cancel it. The token keeps one agent from stopping another agent's job by mistake; it is not a security boundary between users of one account.",
+      "stale_records": "when a job runner is killed while its job runs, the MCP server starts a second runner that watches the pipeline's process group from a session of its own (runner_lost_at, runner_replaced_at and a new runner_pid in the record): the job keeps its timeout and progress and gets a final state, runner_lost or job_lost, also when the server exits afterwards. That closes review 2026-10-04 recheck R4, where a record stayed at running for ever. A record can still stay at starting or running after its job is over when nobody is left to write it: the runner and the server were killed at the same moment, or both runners and the server were lost. The pipeline itself still ends normally and writes summary.json. Signs: progress.updated_at stops advancing, runner_lost_at and server_detached_at are both set without runner_replaced_at (server_detach_reason then says that nobody updates the record), or the time is past deadline_at. Once no process of the job is left, dic_job_cancel(output_dir) from any session settles the record (action settled); while the pipeline is still running it is an ordinary cancellation and needs ownership."
+    },
+    "job_record": {
+      "path": "<output_dir>/.mcp-job.json, written by run tools before the job starts and updated by the job runner",
+      "logs": ["<output_dir>/.mcp-pipeline.stdout.log", "<output_dir>/.mcp-pipeline.stderr.log"],
+      "states": ["starting", "running", "exited", "timed_out", "cancelled", "spawn_failed", "runner_lost", "job_lost"],
+      "fields": [
+        "schema (fasticgn.mcp_job/1)",
+        "state",
+        "call_id",
+        "tool",
+        "output_dir",
+        "summary_json",
+        "gpu_device",
+        "server_pid",
+        "server_version",
+        "created_at",
+        "timeout_s",
+        "deadline_at",
+        "pipeline_argv",
+        "stdout_log",
+        "stderr_log",
+        "states (a sentence that explains the states, for a reader of the file)",
+        "error (spawn_failed: why the pipeline could not be started)",
+        "runner_pid",
+        "job_pid",
+        "job_pgid",
+        "running_since",
+        "ended_at",
+        "exit_code",
+        "wall_s",
+        "summary_present",
+        "server_detached_at",
+        "server_detach_reason",
+        "runner_lost_at",
+        "runner_exit",
+        "note",
+        "runner_replaced_at",
+        "runner_start_ticks",
+        "job_start_ticks",
+        "wait",
+        "progress_interval_s",
+        "progress",
+        "verdict",
+        "events_ok",
+        "events_failed",
+        "cancel_token_sha256",
+        "cancel_requested_at",
+        "cancel_requested_by",
+        "cancel_reason",
+        "settled_by"
+      ],
+      "detached_jobs": "an MCP client ends a stdio session by closing stdin, waiting about 2 s and sending SIGTERM to the server's process group. The job runner and the pipeline run in sessions of their own, so the job finishes, keeps its GPU/output locks until it ends, enforces its timeout and records its final state; the server marks server_detached_at before it exits. A later session can read the result with dic_query_manifest(output_dir). A wait=false job whose session ends is detached in the same way (the mark is also written when the session ends by closing stdin), and the session that returns can cancel it with its cancel_token.",
+      "visibility": "dic_query_manifest lists .mcp-job.json next to summary.json",
+      "progress": "written by the job runner every progress_interval_s seconds while the job runs, and once more at the end; its fields and how they are counted: jobs.progress",
+      "process_identity": "runner_pid with runner_start_ticks and job_pgid (the pipeline's pid, which leads the job's process group) with job_start_ticks name the two processes for as long as the system is up: the ticks are field 22 of /proc/<pid>/stat, the start time in clock ticks since boot. A second runner replaces runner_pid and runner_start_ticks. Records written before 2026-10-05 have no ticks and are identified by arguments alone",
+      "cancellation": "cancel_requested_at and cancel_requested_by (call_id, server_pid, at) are written by dic_job_cancel before it signals; cancel_reason says who stopped the job (dic_job_cancel with its call id, or a SIGTERM to the job runner from elsewhere); settled_by marks a stale record that dic_job_cancel closed; a final state is never overwritten: the runner, the server and dic_job_cancel write one only while the record says starting or running, and a runner that finds its job already settled does not start the pipeline (or stops it)"
+    },
+    "manifest_query": {
+      "candidates": "*.json directly in run_dir plus */*.manifest.json, sorted summary.json, .mcp-job.json, *manifest.json, then the other names; the first 32 are listed in available_documents (truncated=true beyond), a documents filter is applied before that cut, so summary.json is always found; each document at most 10 MiB. A symlink to a path outside the read allowlist is listed with bytes null and skipped (its target's size and path are not reported); a document that cannot be decoded is an errors entry",
+      "max_bytes": "default 16384, allowed 1024..65536; a hard limit: the whole reply (compact JSON, call_id included) stays within it. If needed the server drops top_level_keys, shortens available_documents, missing_fields and errors (budget_notes lists the steps), drops documents and finally answers with a minimal envelope. The wire carries the reply twice (text and structuredContent)",
+      "detail": "auto (default): each document, highest priority first, in full if it still fits, otherwise in the first condensed view that fits (lists longer than 16, then 4, then 1 items summarised); compact: condensed views only; full: never condensed (a document that does not fit is omitted)",
+      "condensed_view": "arrays longer than the threshold become {_condensed_list: {count, item_keys, numeric min/max/mean/n, boolean true/false counts, categorical counts (<= 10 distinct strings), nonempty_lists, not_ok (index, name and status of the items whose status is not ok, at most 50, so a condensed campaign summary names its failed events), first, last}}; strings longer than 512 characters are cut",
+      "fields": "dot-separated paths with optional [index] or [start:stop] per segment, e.g. events[0].warnings or frames[100:120]; at most 32 entries of at most 256 characters; unknown paths are listed in missing_fields",
+      "documents": "names as listed in available_documents",
+      "omitted": "documents that fit in no view are omitted and listed with bytes_full and, while room allows, top_level_keys; a large document no longer pushes out a smaller one of lower priority. complete is true only when nothing was condensed, omitted, missing or in errors"
+    },
+    "aggregation": {
+      "line_y": "rows must be present in the frame CSVs; otherwise ok=false, code no_cod_rows, the rows of the first frame (up to 50) and nothing is written. The order is kept: a descending pair adds warning line_y_descending (the sign is flipped, not corrected).",
+      "output_path": "must end in .csv; must not be named cod_result.csv or frame_*.csv; must not be inside a frames directory (a _frames_* path component or a directory holding frame_*.csv); an existing file inside a run directory (a directory with summary.json or .mcp-job.json) is never replaced, even with overwrite=true",
+      "locks": "the output lock of the run directory that frames_dir or output_path belongs to is taken (output_busy while that run is executing)",
+      "frame_names": "every frame_*.csv in frames_dir must be frame_<digits>[_suffix].csv, else invalid_frame_name",
+      "types": "cal is a JSON number; line_y and roi_cols accept the same forms as the run tools"
+    },
+    "known_issues": [
+      "Run tools block by default. A job started with wait=false is polled (dic_query_manifest on the job record): there is no push notification and FastMCP tasks are not used. A client-side timeout or a closed session does not stop a job: it finishes detached, its result is read later with dic_query_manifest(output_dir), and it is stopped with dic_job_cancel (from another session only with the cancel_token).",
+      "A finished wait=false job is read from summary.json: it has no ok, mcp.brief or compact events view, which only a blocking call's reply carries. Success is job record state exited with exit_code 0 (runs are --strict), verdict ok or warn.",
+      "Progress is counted from files in output_dir (jobs.progress), not reported by the pipeline: it advances with the frame CSVs of the current event, stands still while an event is aggregated, and a failed event counts only the frames it wrote.",
+      "A cancel_token cannot be recovered: when it is lost and the session that started the job is gone, the job ends only by itself, at its timeout or by the operator's hand.",
+      "dic_job_cancel and the second job runner identify a process in /proc (start time and arguments) before they signal it; on a system without /proc they trust the pids in the job record. The server's own clean-up after a timeout (a job runner that does not answer; a job the server watches itself after both runners were lost) signals the process group in the job record without that check, as it did before the job model.",
+      "The GPU binary itself does not inherit the lock descriptors; they are held by the job runner and the pipeline process. If the pipeline process alone is killed, the job runner kills whatever is left of the job's process group (the binary) before it exits and releases the locks; only a binary started outside that process group would be missed. The other case: when the MCP server, the job runner and the pipeline process are all killed with SIGKILL at the same moment (for example pkill -9 python), nobody is left to stop the binary, it runs on, and the locks are free, so a second job can start on the same GPU. That was so before the job model as well (revision 2 at 638ad18). The job record stays at running; a caller with the job's cancel_token stops the binary with dic_job_cancel, without it (a blocking job has none) the operator must.",
+      "Lock files under <job_root>/.mcp-control are never deleted (one per GPU and per output directory used).",
+      "If the server is killed with SIGKILL the audit log keeps only the started entry of calls in flight; running jobs continue as detached jobs.",
+      "Paths are resolved before the allowlist check, so a rejected path still tells whether it exists (read_path_missing vs read_path_denied).",
+      "If the job runner itself is killed, the server starts a second runner for the job (it watches the pipeline's process group and enforces the timeout); if that cannot be started or is lost too, the server waits for the process group itself, with its locks, until it ends or reaches its timeout. Either way the exit code of that job is unknown (job state runner_lost, or job_lost when nothing is left and there is no summary). A runner and a server killed at the same moment leave the record at running: jobs.stale_records says how to recognise and settle it.",
+      "Transport-level malformed messages (JSON nested deeper than about 200 levels, integers over about 4300 digits, lone surrogates, non-JSON lines) are dropped by the MCP SDK without a JSON-RPC error and without an audit record; the call never returns. Not handled by this server (also true of revision 1).",
+      "A server process reads the contract from disk at every dic_describe call but keeps the code it started with: after an upgrade, sessions that were already open describe the new interface (for example wait and dic_job_cancel) and still run the old one, which rejects what it does not know (unknown_params, unknown tool). Reconnect open sessions after an upgrade."
+    ],
+    "error_semantics": "FastMCP/Pydantic schema rejection (for example params missing entirely) is an MCP ToolError and is audited by middleware. A call that passes the public schema but fails a server guardrail returns normal structured content with ok=false/code/error/call_id and the optional fields under errors. Completed run tools return the M3 summary object with ok, call_id and mcp added, also when an event failed (pipeline --strict exit 3).",
+    "dry_run_side_effect_note": "dic_plan preserves pipeline gpu_started=false and filesystem_writes=false. The MCP server separately appends the mandatory audit log, disclosed in result.mcp.",
+    "client_config": {
+      "command": "<python>",
+      "args": ["<repository>/pipeline/mcp_server.py"],
+      "remote_form": {
+        "command": "ssh",
+        "args": [
+          "-T",
+          "-o",
+          "BatchMode=yes",
+          "-o",
+          "ServerAliveInterval=30",
+          "<host>",
+          "<python>",
+          "<repository>/pipeline/mcp_server.py"
+        ]
+      },
+      "note": "<python> is an interpreter with the mcp extra installed (pip install .[mcp]). The server takes no path arguments: the CUDA binary, the job root and the read allowlist come from FASTICGN_* environment variables or the optional config file (template pipeline/config.example.toml), and the plan block reports what they resolved to. ssh does not forward FASTICGN_* variables by default, so a remote server reads them from the remote config file. -T keeps ssh from allocating a terminal on the protocol stream."
+    }
+  },
+  "exit_codes": {
+    "pipeline": [
+      {"code": 0, "meaning": "success. Without --strict a campaign exits 0 even when events failed, and a single event exits 0 when its only failure is an empty COD (cod_empty), as it always did; inspect the summary verdict, events_failed and every events[].status. With --strict, 0 means every event has status ok"},
+      {"code": 1, "meaning": "post-parse preflight or runtime failure in normal execution; without --strict also a failed single event (binary failure, aggregation failure, pipeline exception) and a summary that could not be written"},
+      {"code": 2, "meaning": "argument parsing failure (including a NaN or infinite --conv-threshold, a NaN or infinite --cal in COD mode, and an ambiguous abbreviation such as --d), --describe misuse, dry-run validation failure, --strict validation failure (nothing was written), or an invalid --events / --event-interface-y in any mode (nothing was written)"},
+      {"code": 3, "meaning": "--strict only: the run finished but at least one event has status fail (including cod_all_zero and duplicate_frame_number, which --strict counts as failures)", "strict_only": true}
+    ],
+    "binary": [
+      {"code": 0, "meaning": "successful computation or --version"},
+      {"code": 1, "meaning": "usage, option, input, compute, or output error"}
+    ]
+  },
+  "pitfalls": [
+    {
+      "id": "subset-size-vs-radius",
+      "title": "subset dual semantics",
+      "fact": "Pipeline --subset is SIZE; binary positional subset is RADIUS.",
+      "action": "Convert with radius=(size-1)//2. Pipeline --subset 15 means binary radius 7. Confusing them caused an approximately 100 micrometre false failure. Since 2026-09-17 the binary also accepts --subset-size 15, which is exactly radius 7 and cannot be combined with the positional radius.",
+      "agent_markdown": "**subset 有两套语义。** Pipeline 的 `--subset 15` 是 SIZE，内部换算 `radius=(size-1)//2=7`；binary 的位置参数是 RADIUS。把 15 直接传给 binary 曾造成约 100 μm 的假失败。binary 现在也接受 `--subset-size 15`（= radius 7，输出逐字节相同），与位置参数二选一。"
+    },
+    {
+      "id": "conv-threshold-version-history",
+      "title": "convergence threshold version history",
+      "fact": "The binary's default --conv-threshold is 0.001 (builds from 2026-07-05 on); earlier builds defaulted to 0.05 and can leave an approximately 4 micrometre plateau.",
+      "action": "Use the pipeline, which always forwards --conv-threshold 0.001, or pass it explicitly when calling an older binary directly; --help prints the default of the build at hand.",
+      "agent_markdown": "**收敛阈值有版本史。** 2026-07-05 起的构建 CLI 默认 0.001；Pipeline 恒显式传 `--conv-threshold 0.001`。若绕过 pipeline 调用更老 binary，必须自己传 0.001；老默认 0.05 会留下约 4 μm plateau（`--help` 会打印当前构建的默认值）。"
+    },
+    {
+      "id": "negative-zncc-status",
+      "title": "zncc<0 is a status row",
+      "fact": "u and v on zncc<0 rows may be initial seeds, previous-frame seeds, or failed-iteration residue.",
+      "action": "Filter finite(zncc) && zncc>=0; for displacement statistics also require finite(u,v).",
+      "agent_markdown": "**`zncc < 0` 是状态行。** 其中的 `u,v` 可能是初值、种子或失败残留，不能当有效位移。所有统计和聚合至少过滤 `zncc >= 0`。"
+    },
+    {
+      "id": "left-aligned-12bit-input",
+      "title": "12-bit data left-aligned in 16-bit files",
+      "fact": "Some cameras store 12-bit samples shifted left by four bits in a uint16 container (the low four bits are always zero). --input-depth auto reads such files as 16-bit (it infers 12 only when the stored maximum is <= 4095), auto cannot be combined with an explicit --input-align, and the default --input-depth 8 reduces any 16-bit file to 8 bits and still exits 0.",
+      "action": "Run the dry-run first and follow events[].input_recommendation; for left-aligned 12-bit data pass --input-depth 12 --input-align left explicitly and do not use auto.",
+      "agent_markdown": "**12-bit 左对齐数据要显式传位深。** 有的相机把 12-bit 样本左移 4 位存进 uint16 容器（低 4 位恒零）：`--input-depth auto` 会把它当 16-bit（只有存储最大值 ≤ 4095 才推断成 12），`auto` 不得与显式 `--input-align` 同用，而默认的 `--input-depth 8` 会把任何 16-bit 文件降成 8 bit 且照样 exit 0。先跑 dry-run、按 `events[].input_recommendation` 传参；左对齐 12-bit 数据显式传 `--input-depth 12 --input-align left`，不要用 `auto`。"
+    },
+    {
+      "id": "cod-method-generation",
+      "title": "COD default method is naive again",
+      "fact": "Default COD method, history: naive (u_L0 - u_L1) until 2026-07-09; fillboundary (each line's u extrapolated along its uy to the midpoint row) from 2026-07-09 to 2026-10-05; naive again since 2026-10-05, with fillboundary still available as --cod-method fillboundary (maintainer decision 2026-10-05). Why: with clean lines fillboundary is only a few percent above naive (per-frame spatial median about 5-7 percent with the default gauge 35 on two 800-frame laboratory events; 1.7-3.4 percent at the last-10-frame plateau with lines 8 px either side of the right interface row), but each line's uy noise is multiplied by the extrapolation distance: on 25 laboratory static-reference sequences the fillboundary COD noise floor is about 2.0 times naive with lines 8 px either side of the interface and about 3.5 times with lines 17.5 px either side; on the two 800-frame events the pointwise ratio (points with |naive| > 50 micrometres) spanned about 0.8 to 1.3 between the 1st and 99th percentiles, and the event maxima were 1.27 and 1.43 times the naive value at the same point. A line inside the interface transition band also biases fillboundary far more than naive: with the interface row 2 px off, four laboratory events gave fillboundary 77-79 percent of the plateau jump and naive 93-94 percent (last 10 frames). The laboratory's own line conventions per dataset are in lab_notes (cod-lab-line-conventions).",
+      "action": "Leave --cod-method out (naive) unless fill-boundary semantics are required. A COD made between 2026-07-09 and 2026-10-05 without --cod-method is fillboundary: reproduce it with --cod-method fillboundary, and read events[].cod_mode of any summary rather than assuming. When fillboundary is used, quote the naive value at the same point next to its extremes (cod_stats.naive_at_max_um / naive_at_min_um, filled only under fillboundary) and the 95th percentile of |COD| (cod_stats.abs_p95_um), or use per-frame medians or percentiles (docs/quality-checks.md, section 6). Pass --gauge explicitly; omitting it means 35. Measure the interface row of each dataset first and keep both lines outside the transition band: neither the dry-run nor a campaign verdict of ok checks that. One campaign covers events with different interface rows with --interface-y for the default row and --event-interface-y PATTERN=ROW for the others (before 2026-10-05 a campaign took one row and was run once per group).",
+      "agent_markdown": "**COD 默认口径的沿革：现在是 naive。** 默认口径 2026-07-09 以前是 `naive`（两测线 `u` 直接差分），2026-07-09 至 2026-10-05 是 `fillboundary`（各测线 `u` 沿 `uy` 外推到两线中点再相减），2026-10-05 起改回 `naive`，`fillboundary` 仍可用 `--cod-method fillboundary` 选（2026-10-05 拍板）。原因：测线干净时 fill-boundary 只比 naive 高几个百分点（默认 gauge 35、两个 800 帧实验室事件的逐帧空间中位数约 5–7%；界面 ±8 px、界面行给对时末 10 帧平台约 1.7–3.4%），但每条测线的 `uy` 噪声被外推距离放大：25 组实验室 static-ref 上，测线距界面 ±8 px 时 fill-boundary 噪声底约为 naive 的 2.0 倍，±17.5 px 时约 3.5 倍；那两个 800 帧事件上逐点比值（只计 naive 绝对值 > 50 μm 的点）1%–99% 分位约 0.8–1.3，事件最大值是同一点 naive 的 1.27 和 1.43 倍。测线进了界面过渡带时 fill-boundary 偏得也多得多：界面行错 2 px 的四个实验室事件，末 10 帧 fill-boundary 只有平台跳变的 77–79%，naive 为 93–94%。本实验室各数据集的测线惯例见 `lab_notes`（cod-lab-line-conventions）。做法：不需要 fill-boundary 语义就不传 `--cod-method`（即 naive）；2026-07-09 至 2026-10-05 之间没传 `--cod-method` 的结果是 fill-boundary，复现要显式 `--cod-method fillboundary`，以 summary 的 `events[].cod_mode` 为准。用 fill-boundary 时报极值要并列同一点的 naive 值（`cod_stats.naive_at_max_um`，只在 fillboundary 下有值）和 |COD| 的 p95（`cod_stats.abs_p95_um`），或用中位数/分位数（见 `docs/quality-checks.md` 第 6 节）。`--gauge` 要显式写，不写就是 35。换一批数据先量界面行，两条测线都要在过渡带外：dry-run 和 campaign 全 `ok` 都查不出这一点。界面行不同的事件可以在一次 campaign 里用 `--interface-y` 给默认行、`--event-interface-y PATTERN=行` 给其余事件（2026-10-05 起；此前一次 campaign 只能给一个界面行，要分组跑）。"
+    },
+    {
+      "id": "legacy-five-column-fallback",
+      "title": "v9 and earlier have five columns",
+      "fact": "Without uy, fill-boundary is mathematically identical to naive. Since 2026-09-17 the pipeline refuses --cod-method fillboundary on such CSVs with cod_uy_column_missing instead of degrading silently. The default naive (since 2026-10-05) needs no uy column and aggregates them.",
+      "action": "With the default naive a five-column CSV is fine and the summary records cod_mode: naive. Use a nine-column v10+ binary whenever fill-boundary semantics are required.",
+      "agent_markdown": "**v9 及更早只有 5 列。** 缺少 `uy` 的 CSV 让 fill-boundary 数学上等同 naive；2026-09-17 起显式 `--cod-method fillboundary` 遇到这种 CSV 直接报 `cod_uy_column_missing`，不再静默降级。默认的 `naive`（2026-10-05 起）不需要 `uy`，5 列可以直接聚合（summary 记 `cod_mode: naive`）；要 fill-boundary 就用 9 列 binary（v10+）。"
+    }
+  ],
+  "lab_notes": [
+    {
+      "id": "highspeed2-left-shifted-12bit",
+      "title": "highspeed2 12-bit left alignment",
+      "fact": "highspeed2 TIFF is a uint16 container carrying 12-bit data shifted left by four bits; all low four bits are zero.",
+      "action": "Use --input-depth 12 --input-align left. Do not use auto: it infers 16, and auto plus explicit align is rejected.",
+      "agent_markdown": "**highspeed2 是 12-bit 左移。** TIFF 容器为 uint16，但低 4 位恒零；正确参数是 `--input-depth 12 --input-align left`。`auto` 会误判成 16，而且 `auto` 不得与显式 `--input-align` 同用。对这批数据不要用 `auto`。"
+    },
+    {
+      "id": "cod-lab-line-conventions",
+      "title": "30 kN line conventions and interface rows per segment",
+      "fact": "The lab's 30 kN convention is lines 8 px either side of the interface row, registered per segment (2026-10-05, measured per event on the last 10 frames): event01-20 interface 131, --interface-y 131 --gauge 16 (lines 123/139); event21-25 interface 133, --interface-y 133 --gauge 16 (lines 125/141; event24 has no resolvable rupture and takes its segment's 133). The whole specimen moved about 2 px down in the camera frame between event20 and event21 (20 kN likewise between event26 and event27, interface about 131 then about 133). With the other segment's row one line lies inside the transition band (fillboundary: event21/22/23/25 77-79 percent with 131, 103-105 percent with 133; event10 103 percent with 131, 81 percent with 133). --interface-y 133 without --gauge gives the default 35 (lines 116/150, the geometry used before 2026-10-05). Over the other config1 loads and lowrough-20260918 the measured interface rows span 128-133.5 (docs/lab/simulacrum.md, dataset table).",
+      "action": "Use the interface row of the event's segment; one campaign covers both segments with --interface-y 131 --event-interface-y 'event2[1-5]=133' (docs/lab/simulacrum.md; before 2026-10-05 a campaign took one row and was run once per segment). Pass --gauge 16 explicitly for the lab's 8 px convention. Leave --cod-method out (naive) for lab COD; the general rules are pitfall cod-method-generation.",
+      "agent_markdown": "**30 kN 的测线惯例与分段界面行。** 实验室惯例是界面 ±8 px，界面行按段登记（2026-10-05 逐事件实测末 10 帧）：event01–20 界面 131，`--interface-y 131 --gauge 16`（测线 123/139）；event21–25 界面 133，`--interface-y 133 --gauge 16`（测线 125/141；event24 没有可分辨的破裂，按段取 133）。原因是整个试样在 event20 → 21 之间相对相机向下平移约 2 px（20 kN 同样在 event26 → 27 之间，界面约 131 → 约 133）。用错段的界面行会有一条测线落进过渡带（fill-boundary：event21/22/23/25 按 131 为 77–79%、按 133 为 103–105%；event10 按 131 为 103%、按 133 为 81%）。`--interface-y 133` 不带 `--gauge` 是默认 35（测线 116/150，2026-10-05 以前的几何）。其他 config1 载荷和 lowrough-20260918 实测在 128–133.5（见\"数据集惯例参数\"表）。一次 campaign 用 `--interface-y 131 --event-interface-y 'event2[1-5]=133'` 覆盖两段（2026-10-05 起；此前只能按段分开跑）。实验室 COD 不传 `--cod-method`（即 naive），`--gauge 16` 要显式写；通用规则见 pitfall cod-method-generation。"
+    },
+    {
+      "id": "parameter-regimes",
+      "title": "two parameter regimes",
+      "fact": "GPU production uses size 15 step 1: 171024 POI on the full 1036x186 config1 frame. LabAgent/figures commonly use size 21 step 5: 6699 POI on the same full frame. The binary's full-field grid puts a POI at every x = m, m+step, ... < width - m and y = m, m+step, ... < height - m with m = radius + 2 (radius 7: 1018 x 168; radius 10, step 5: 203 x 33). LabAgent's own ROI is not recorded.",
+      "action": "Check the regime before comparing any numerical result.",
+      "agent_markdown": "**不要混用两套 regime。** GPU 生产常用 size 15、step 1（config1 1036×186 全幅 171,024 个 POI）；LabAgent/绘图常用 size 21、step 5（同一全幅 6,699 个 POI；LabAgent 自己的 ROI 未登记）。binary 全幅网格：x 从 m 起每 step 取一点、到 宽 − m 前止，y 同理，m = radius + 2（radius 7 为 1018 × 168，radius 10、step 5 为 203 × 33）。比较结果前先核对 regime。"
+    },
+    {
+      "id": "spaced-path-version",
+      "title": "paths containing spaces",
+      "fact": "Tar-list paths containing spaces are supported from commit 9b22758 and release v1.1.0.",
+      "action": "Use v1.1.0+; older parsers can silently split paths incorrectly.",
+      "agent_markdown": "**带空格路径需要新 binary。** `9b22758` 起支持（随 v1.1.0 发布）；更老版本的 tar-list parser 会错切。"
+    },
+    {
+      "id": "event-count-definition",
+      "title": "campaign event counts",
+      "fact": "The config1-bimaterial data directories hold 85 events for 10/20/30 kN (30 + 30 + 25) and 32 for 40 kN (run1-run3). The old batch script batch_bimaterial_altbin.py drops 10kN/event05 and 30kN/event24 as historical bad events, which gives the historical counts 83 (10/20/30 kN) and 115 (with 40 kN); why they were dropped is not recorded. Measured 2026-10-05: in their last 10 frames neither shows a resolvable displacement jump across the interface (0.0003 and 0.0005 px between rows 111-122 and 140-151), so no interface row can be measured for them. The current pipeline drops nothing: campaigns process all 85.",
+      "action": "Say which count you mean (85 on disk and processed by campaigns, or 83/115 after the old script's two exclusions) and give the load range.",
+      "agent_markdown": "**事件数口径。** `config1-bimaterial` 的 10/20/30 kN 数据目录里共 85 个事件（30 + 30 + 25），40 kN 另有 32 个（run1–run3）。旧批处理脚本 `batch_bimaterial_altbin.py` 把 `10kN/event05`、`30kN/event24` 当作历史坏事件剔除，所以历史统计是 83 个（含 40 kN 为 115 个）；剔除原因没有记录；2026-10-05 实测这两个事件末 10 帧在界面两侧没有可分辨的位移跳变（行 111–122 对 140–151 只差 0.0003 / 0.0005 px），界面行无法判定。现行 pipeline 不做剔除，campaign 会处理全部 85 个。引用时写明是哪个口径和载荷范围。"
+    }
+  ],
+  "known_limitations": [
+    "--input-depth auto misclassifies left-shifted 12-bit values above 4095 as 16-bit.",
+    "A dark left-shifted 12-bit first frame whose stored max is <=4095 is ambiguous with right-aligned 12-bit.",
+    "Multi-frame auto inference may differ by target; summary input_reference reports only the reference frame's effective mode.",
+    "Ordinary pipeline CSV mode has no raw-format manifest; multi-frame CSV runs have .opencorr-state integrity metadata. Summary provenance is read from binary --version.",
+    "Raw-format and diagnostics manifests keep their record layouts and have carried an additive engine block since 2026-09-17. The separate .opencorr-state contract records git_hash/build_date, a binary fingerprint, input fingerprints and run parameters. Requested input options still do not claim per-frame effective auto modes.",
+    "With the default --input-depth 8 a 16-bit image is reduced to 8 bits by OpenCV before the solver sees it, and the run still exits 0. Binaries whose --version prints a version= line (built from 2026-10-05 on) probe the reference once more and print a warning that names the stored depth and the option to pass, repeated in the status line and recorded as input_image.reference_source_depth in raw manifests; the pipeline does not read that warning into its summary (it stays in events[].binary_stderr_log). Earlier binaries cannot warn. In both cases the dry-run input_mode_differs_from_probe warning and, in the summary, input_8bit_max_255 (a warn whenever the reference file's container is deeper than 8 bits) remain, and --strict refuses such a run.",
+    "The 8-bit max=255 warning (input_8bit_max_255) is a heuristic for possible saturation or high-bit truncation, not proof. It is info while the graded fraction of pixels at 255 is within --saturation-warn-fraction (default 0.05, not calibrated against correlation error) and warn above it. COD mode grades the bands of the subsets that enter the COD aggregation, on the reference frame only (later frames can saturate where the reference does not); full-field mode grades the whole reference frame, which can be dominated by bright pixels outside the region you analyse.",
+    "Dry-run probes only each event's first frame; its runtime/disk estimates are linear models calibrated on one host on one date (estimates.calibration), so use the upper end of runtime_s_range for timeouts.",
+    "The C++ binary has no --describe; the pipeline's --describe (this file) is authoritative for both.",
+    "Summary frames counts target/output frames and excludes the fixed reference frame.",
+    "Without --strict, normal execution still runs with arguments the dry-run rejects (legacy compatibility) and only reports them as argument_warning: a negative --cal flips the sign of cod_um and x_mm, an even --subset is rounded down (16 runs as 15), --gauge 0 or 1 puts both lines on the same row. It does not apply the image-aware checks either; their consequences surface after the run as cod_line_missing or cod_empty. --strict applies every dry-run check first.",
+    "Without --strict, a COD result that measured nothing keeps its historical exit code: a single event whose COD CSV is header-only still exits 0 although its status is fail (cod_empty, with cod_line_missing when the binary skipped a line) and the console says so, and an all-zero COD is only a warning (cod_all_zero). Read the summary, or use --strict, which exits 3.",
+    "When an event fails, a COD CSV left at the same path by an earlier run is neither moved nor deleted, as in 638ad18: it keeps its name (<event>.csv, cod_result.csv), so a script that only checks the exit code and then globs the CSVs reads the earlier run's result. events[].cod_csv is null and stale_cod_csv names the file. Without --strict a campaign whose events failed still exits 0, although the console no longer reports it as all done. Use a new --output-dir per run and read every events[].status.",
+    "Single-event COD mode always writes <output-dir>/cod_result.csv, so two events run into the same --output-dir still overwrite each other's COD CSV; the dry-run reports cod_csv_exists and the second run's summary cod_csv_replaced, but the first run's summary keeps naming the replaced file.",
+    "A relative --gpu-bin, FASTICGN_GPU_BIN or config gpu_bin is made absolute against the current working directory, not against the config file's location.",
+    "The binary's complete stderr is kept for every event in <output-dir>/<frame directory name>.binary.log (about 0.5 KB per frame), so a campaign of long events accumulates logs in the output root.",
+    "FFTCC initial guesses can only represent integer displacements in [-(r-1), +r] around the seed for subset radius r (correlation window 2r); in synthetic tests they were reliable only to about +/-(r-2) px. A whole-frame fallback recomputes the frame from a zero guess and merges it per POI with the seeded attempt (engine.frame_fallback_policy), so it never leaves more bad POIs than the seeded attempt, but it cannot recover motion beyond that range, and POIs neither pass recovers restart from zero on the next frame: once triggered, the fallback can fire on every later frame, each time adding a full-frame FFTCC + ICGN. Builds without frame_fallback_policy kept the from-scratch result even when it was worse, so near the subset radius a single disturbed frame could lose tracking for every later frame. Watch the raw manifest frames[].fallback_used and valid_ratio.",
+    "Each tar-list line must end with a whitespace-free output_name. With a spaced path but missing output_name, the final path segment can be silently misread as the output name; the final literal tab wins as delimiter when present.",
+    "Multi-frame output uses an integrity record in .opencorr-state. Resume requires the same binary, reference, output-deciding parameters and identical target prefix (append allowed; see binary.resume_contract for what is compared and what a rejection says), and validates file bytes/digests. Missing files are recovered by replay from frame 1 to restore temporal history; verified existing frame payloads are not rewritten. Legacy/untracked outputs are rejected; damaged tracked frames are rejected unless --repair quarantines and regenerates them. Failed pipeline runs retain intermediate frames and tar_list.txt for recovery.",
+    "--durability rename is the default and issues no fsync per frame: publication stays crash-consistent and every rejection still holds, but after a power loss or kernel panic an already published frame may be incomplete. That damage is detected by digest on the next run and repaired with --repair; --durability fsync buys power-loss durability at roughly four fsync per frame.",
+    "Non-UTF-8 reference/target/output/diagnostics paths and output names are rejected at startup because the JSON ledger and manifests must be valid UTF-8.",
+    "--strict checks a campaign as a whole before it starts: one event the dry-run refuses (for example a subdirectory with a single image, or a 16-bit event read as 8-bit) stops every event with exit 2. Without --strict the other events run. Fix or move the refused event, or run the others as their own campaign.",
+    "MCP run overwrite=true is deliberately stricter than the legacy pipeline: it accepts only an existing empty run directory and never deletes or mixes a non-empty run directory."
+  ]
+}

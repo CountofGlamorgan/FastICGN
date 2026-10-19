@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+build/
+# pip install . / python -m build
+*.egg-info/
+dist/
+# local virtual environments
+.venv/
+venv/
+# Local agent instructions; not part of the public source distribution.
+/AGENTS.md
+/CLAUDE.md

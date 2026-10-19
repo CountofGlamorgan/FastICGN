@@ -1,0 +1,111 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "default-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "cuda-release",
+      "inherits": "default-base",
+      "displayName": "CUDA Release (production configuration)",
+      "description": "CUDA ICGN + cuFFT FFTCC, no FFTW, no tests. Matches the validated production binary. Override -DCMAKE_CUDA_ARCHITECTURES for non-Ada GPUs.",
+      "cacheVariables": {
+        "OPENCORR_GPU_MVP_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "89",
+        "OPENCORR_GPU_MVP_WITH_FFTW": "OFF",
+        "OPENCORR_GPU_MVP_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "cuda-tests",
+      "inherits": "cuda-release",
+      "displayName": "CUDA Release + regression tests",
+      "description": "cuda-release plus the ctest suite (library_boundaries, output_integrity, cli_interface, parity_unit, version_metadata, oob_rejection, frame_fallback, cache_lifecycle, registry_threads, subpixel_accuracy, zero_texture; 11 tests). Needs a CUDA device to run the tests.",
+      "cacheVariables": {
+        "OPENCORR_GPU_MVP_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "cuda-fftw",
+      "inherits": "cuda-tests",
+      "displayName": "CUDA Release + FFTW CPU FFTCC + tests",
+      "description": "Dual FFTCC backend for --fftcc cpu|gpu A/B runs; also builds opencorr_cli_cpu. Links FFTW (GPL-2.0-or-later): see NOTICE.md before distributing binaries.",
+      "cacheVariables": {
+        "OPENCORR_GPU_MVP_WITH_FFTW": "ON"
+      }
+    },
+    {
+      "name": "cpu-only",
+      "inherits": "default-base",
+      "displayName": "CPU-only Release + tests",
+      "description": "No CUDA toolkit required. FFTW-backed CPU FFTCC plus the CPU ICGN backend, opencorr_cli_cpu, and the CPU ctest suite.",
+      "cacheVariables": {
+        "OPENCORR_GPU_MVP_ENABLE_CUDA": "OFF",
+        "OPENCORR_GPU_MVP_WITH_FFTW": "ON",
+        "OPENCORR_GPU_MVP_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cuda-release",
+      "configurePreset": "cuda-release"
+    },
+    {
+      "name": "cuda-tests",
+      "configurePreset": "cuda-tests"
+    },
+    {
+      "name": "cuda-fftw",
+      "configurePreset": "cuda-fftw"
+    },
+    {
+      "name": "cpu-only",
+      "configurePreset": "cpu-only"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "cuda-release",
+      "configurePreset": "cuda-release",
+      "description": "The production configuration registers no tests; this preset succeeds instead of failing. Use cuda-tests to actually run them.",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "ignore"
+      }
+    },
+    {
+      "name": "cuda-tests",
+      "configurePreset": "cuda-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cuda-fftw",
+      "configurePreset": "cuda-fftw",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "cpu-only",
+      "configurePreset": "cpu-only",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+# Citation File Format 1.2.0 — https://citation-file-format.github.io/
+#
+# Release metadata:
+#   * preferred-citation — replace the `unpublished` entry with the published
+#     article (journal, volume, pages, doi, year) once it appears.
+#   * version / date-released — bump at each tagged release.
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+title: "FastICGN"
+abstract: >-
+  FastICGN is a GPU-accelerated, sequence-oriented digital image correlation
+  (DIC) implementation for long image sequences, built on OpenCorr. It
+  reproduces the OpenCorr CPU reference measurement definition (FFTCC seeding
+  plus IC-GN refinement with a first-order shape function) while keeping
+  reference-image state, gradients and Hessians resident on the GPU across
+  frames, and adds raw binary output, integrity manifests and an agent-operable
+  command-line and MCP interface. The executables keep their historical
+  opencorr_cli_* names.
+type: software
+authors:
+  - family-names: "Wang"
+    given-names: "Chonglang"
+version: "v1.2.0"
+date-released: "2026-10-19"
+license: MPL-2.0
+repository-code: "https://github.com/CountofGlamorgan/FastICGN"
+url: "https://github.com/CountofGlamorgan/FastICGN"
+keywords:
+  - digital image correlation
+  - DIC
+  - GPU
+  - CUDA
+  - IC-GN
+  - full-field measurement
+  - laboratory earthquake
+references:
+  - type: software
+    title: "OpenCorr: an open source C++ library for research and development of digital image correlation"
+    authors:
+      - family-names: "Jiang"
+        given-names: "Zhenyu"
+    repository-code: "https://github.com/vincentjzy/OpenCorr"
+    url: "https://www.opencorr.org/"
+    license: MPL-2.0
+    notes: >-
+      Upstream library vendored into src/ at commit
+      994337a74b051f5b28a305299df3bfc12d08288f (2026-08-28). See NOTICE.md.
+  - type: article
+    title: "OpenCorr: An open source library for research and development of digital image correlation"
+    authors:
+      - family-names: "Jiang"
+        given-names: "Zhenyu"
+    journal: "Optics and Lasers in Engineering"
+    volume: 165
+    start: 107566
+    year: 2023
+    doi: "10.1016/j.optlaseng.2023.107566"
+preferred-citation:
+  type: unpublished
+  # PLACEHOLDER: manuscript in preparation, not yet submitted or published.
+  # Replace this whole block with the published article when it appears.
+  title: >-
+    FastICGN: an open-source GPU-accelerated digital image correlation pipeline
+    for long image sequences in laboratory rupture experiments
+  authors:
+    - family-names: "Wang"
+      given-names: "Chonglang"
+  year: 2026
+  notes: "Manuscript in preparation. Title and author list are provisional."

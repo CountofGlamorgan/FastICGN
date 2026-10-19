@@ -1,0 +1,154 @@
+# Copyright (c) 2026 Chonglang Wang
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_gpu_job:
+        description: "Also run the CUDA job (needs a self-hosted [self-hosted, gpu] runner)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-linux:
+    name: CPU-only build, tests and gates (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake \
+            libeigen3-dev libopencv-dev libfftw3-dev \
+            python3 python3-numpy python3-pil
+
+      - name: Configure (cpu-only preset)
+        run: cmake --preset cpu-only
+
+      - name: Build
+        run: cmake --build --preset cpu-only -j "$(nproc)"
+
+      - name: ctest
+        run: ctest --preset cpu-only
+
+      - name: Self-check (CPU-only; GPU stages report SKIP)
+        run: bash smoke/selfcheck.sh --build-dir build/cpu-only
+
+      - name: Pipeline unit tests
+        run: python3 -m unittest discover -s pipeline
+
+      - name: Smoke unit tests
+        run: python3 -m unittest discover -s smoke -p 'test_check_cpu_gpu_parity.py'
+
+      - name: Generated agent docs are in sync
+        run: python3 pipeline/sync_agent_docs.py --check
+
+      - name: Licence headers and vendored-source integrity
+        run: python3 smoke/check_license_headers.py
+
+      - name: Install smoke check
+        run: |
+          cmake --install build/cpu-only --prefix "${RUNNER_TEMP}/opencorr-prefix"
+          "${RUNNER_TEMP}/opencorr-prefix/bin/opencorr_cli_cuda_mvp" --version
+          bash smoke/check_installed_headers.sh --prefix "${RUNNER_TEMP}/opencorr-prefix"
+
+  cuda-compile:
+    name: CUDA compile only (nvidia/cuda devel container, no GPU)
+    # GitHub-hosted runners have no GPU, so nothing here launches a kernel. The
+    # job proves that the CUDA sources (src/*.cu, src/fftcc2d_cuda.*, the
+    # OPENCORR_GPU_MVP_USE_CUDA branches of the CLI) and the CUDA-only test
+    # probes compile and link, which the CPU job cannot see. The image is the
+    # CUDA 13.2 toolkit line the project is built with; the presets pin
+    # CMAKE_CUDA_ARCHITECTURES=89, which needs no device at build time.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: nvidia/cuda:13.2.1-devel-ubuntu24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install dependencies
+        # git comes first: without it actions/checkout downloads an archive and
+        # the build cannot record its commit.
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential cmake \
+            libeigen3-dev libopencv-dev libfftw3-dev python3
+
+      - uses: actions/checkout@v4
+
+      - name: Trust the checkout (the container user does not own the workspace)
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Configure (cuda-release preset, the production configuration)
+        run: cmake --preset cuda-release
+
+      - name: Build
+        run: cmake --build --preset cuda-release -j "$(nproc)"
+
+      - name: The binary loads and reports its version (no CUDA call)
+        run: build/cuda-release/opencorr_cli_cuda_mvp --version
+
+      - name: Configure and build (cuda-fftw preset, dual FFTCC backend and test probes)
+        run: |
+          cmake --preset cuda-fftw
+          cmake --build --preset cuda-fftw -j "$(nproc)"
+
+      - name: ctest, only the tests that need no CUDA device
+        run: ctest --preset cuda-fftw -LE gpu --no-tests=error
+
+  gpu-cuda:
+    name: CUDA build, tests and production anchors (self-hosted)
+    # Manual only: GitHub-hosted runners have no GPU. Without a runner labelled
+    # `self-hosted` + `gpu` this job is never scheduled, so the CPU job and the
+    # CUDA compile job above are the whole automatic CI.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_gpu_job }}
+    runs-on: [self-hosted, gpu]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build (cuda-tests preset)
+        run: |
+          cmake --preset cuda-tests
+          cmake --build --preset cuda-tests -j "$(nproc)"
+
+      - name: ctest
+        run: ctest --preset cuda-tests
+
+      - name: Configure and build (cuda-fftw preset)
+        run: |
+          cmake --preset cuda-fftw
+          cmake --build --preset cuda-fftw -j "$(nproc)"
+
+      - name: Production anchors
+        # Needs the lab dataset. Configure the repository variables below to
+        # enable it; otherwise the step reports a skip and succeeds.
+        env:
+          ANCHOR_BIN: ${{ github.workspace }}/build/cuda-tests/opencorr_cli_cuda_mvp
+          ANCHOR_FFTW_BIN: ${{ github.workspace }}/build/cuda-fftw/opencorr_cli_cuda_mvp
+          ANCHOR_REF: ${{ vars.OPENCORR_ANCHOR_REF }}
+          ANCHOR_TAR_LIST_60: ${{ vars.OPENCORR_ANCHOR_TAR_LIST_60 }}
+          ANCHOR_TAR_LIST_800: ${{ vars.OPENCORR_ANCHOR_TAR_LIST_800 }}
+          ANCHOR_GPU_DEVICE: ${{ vars.OPENCORR_ANCHOR_GPU_DEVICE }}
+        run: |
+          if [ -z "${ANCHOR_REF}" ] || [ -z "${ANCHOR_TAR_LIST_60}" ] \
+             || [ -z "${ANCHOR_TAR_LIST_800}" ]; then
+            echo "::notice::anchor dataset variables are not configured; skipping"
+            exit 0
+          fi
+          bash smoke/run_production_anchors.sh

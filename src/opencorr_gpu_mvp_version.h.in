@@ -1,0 +1,17 @@
+/*
+ * Copyright (c) 2026 Chonglang Wang
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+#pragma once
+
+#define OPENCORR_GPU_MVP_GIT_HASH "@OPENCORR_GPU_MVP_GIT_HASH@"
+#define OPENCORR_GPU_MVP_BUILD_DATE "@OPENCORR_GPU_MVP_BUILD_DATE@"
+/* Semantic version: the CMake project VERSION plus "-dev" between releases. */
+#define OPENCORR_GPU_MVP_VERSION "@OPENCORR_GPU_MVP_VERSION@"
+/* "1" when tracked files differed from HEAD at build time, "0" when they did
+ * not, "unknown" outside a git checkout. */
+#define OPENCORR_GPU_MVP_GIT_DIRTY "@OPENCORR_GPU_MVP_GIT_DIRTY@"
